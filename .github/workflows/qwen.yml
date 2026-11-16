@@ -4,7 +4,6 @@ on:
   issue_comment:
     types: [created]
 
-# Важно: даем права на запись, чтобы бот мог пушить ветку и создавать PR
 permissions:
   contents: write
   pull-requests: write
@@ -12,23 +11,23 @@ permissions:
 
 jobs:
   qwen:
-    if: contains(github.event.comment.body, '@qwencoder')
-    runs-on: ubuntu-latest
+    # Бот работает только для вас и только на вашем VPS
+    if: contains(github.event.comment.body, '@qwencoder') && github.actor == 'acheonline'
+    runs-on: [self-hosted, vps]
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Нужно для создания ветки от актуального состояния
-
-      - name: Install Qwen Code
-        run: npm install -g @qwen-code/qwen-code
+          fetch-depth: 0
+          clean: true
 
       - name: Run Qwen Code
         env:
           MY_API_KEY: ${{ secrets.QWEN_API_KEY }}
         run: |
           PROMPT=$(echo "${{ github.event.comment.body }}" | sed 's/@qwencoder//g')
-          qwen --yolo \
+          qwen --approval-mode auto \
             --prompt "$PROMPT" \
             --output-format text \
             --auth-type openai \
@@ -41,34 +40,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          # Настраиваем git пользователя
           git config --global user.name "Qwen Bot"
           git config --global user.email "qwen-bot@users.noreply.github.com"
           
-          # Проверяем, есть ли изменения
           if [[ -z $(git status --porcelain) ]]; then
-            echo "Нет изменений для коммита. Пропускаем создание PR."
+            echo "Нет изменений для коммита."
             exit 0
           fi
           
-          # Создаем имя ветки на основе номера issue
           BRANCH_NAME="qwen/issue-${ISSUE_NUMBER}"
-          
-          # Создаем и переключаемся на новую ветку
           git checkout -b "$BRANCH_NAME"
-          
-          # Добавляем все изменения и коммитим
           git add -A
-          git commit -m "feat: Qwen Code changes for issue #${ISSUE_NUMBER}"
-          
-          # Пушим ветку в репозиторий
+          git commit -m "feat: Qwen changes for issue #${ISSUE_NUMBER} [skip ci]"
           git push origin "$BRANCH_NAME"
           
-          # Создаем Pull Request с помощью GitHub CLI
-          # --fill берет заголовок и описание из коммита, если они не указаны
-          # --base main означает, что PR будет вливаться в ветку main
           gh pr create \
             --base main \
             --head "$BRANCH_NAME" \
             --title "Qwen: Изменения по задаче #${ISSUE_NUMBER}" \
-            --body "Этот PR был автоматически создан Qwen Code в ответ на комментарий в issue #${ISSUE_NUMBER}."
+            --body "Автоматический PR от Qwen Code на Self-Hosted VPS."
