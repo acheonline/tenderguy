@@ -44,11 +44,11 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация) или parse-docx (извлечение текста и таблиц)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы) или parse-pdf (текстовый слой и OCR)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
-	fs.StringVar(&p.file, "file", "", "один .docx для разбора (вместо каталога)")
+	fs.StringVar(&p.file, "file", "", "один документ (.docx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
-	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст документов целиком (parse-docx)")
+	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст документов целиком (parse-docx, parse-pdf)")
 	return fs, p
 }
 
@@ -74,6 +74,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if p.command == commandParseDocx {
 		return parseDocx(p, stdout, stderr)
+	}
+	if p.command == commandParsePdf {
+		return parsePdf(p, stdout, stderr)
 	}
 
 	res, err := scanner.Scan(p.inputDir)
@@ -102,19 +105,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 // дешевле показать сразу, чем в процессе разбора каталога.
 func checkFlags(p *params) error {
 	switch p.command {
-	case commandScan, commandParseDocx:
+	case commandScan, commandParseDocx, commandParsePdf:
 	default:
-		return fmt.Errorf("неизвестный --command %q, допустимы %s и %s", p.command, commandScan, commandParseDocx)
+		return fmt.Errorf("неизвестный --command %q, допустимы %s, %s и %s", p.command,
+			commandScan, commandParseDocx, commandParsePdf)
 	}
 	if p.format != "text" && p.format != "json" {
 		return fmt.Errorf("неизвестный --format %q, допустимы text и json", p.format)
 	}
 	if p.command == commandScan {
 		if p.file != "" {
-			return fmt.Errorf("--file работает только с --command %s", commandParseDocx)
+			return fmt.Errorf("--file работает только с командами разбора (%s, %s)", commandParseDocx, commandParsePdf)
 		}
 		if p.withText {
-			return fmt.Errorf("--with-text работает только с --command %s", commandParseDocx)
+			return fmt.Errorf("--with-text работает только с командами разбора (%s, %s)", commandParseDocx, commandParsePdf)
 		}
 		if strings.TrimSpace(p.inputDir) == "" {
 			return fmt.Errorf("не задан каталог с документами")
@@ -125,7 +129,7 @@ func checkFlags(p *params) error {
 	case p.file != "" && strings.TrimSpace(p.inputDir) != "":
 		return fmt.Errorf("--file и --input-dir передают один и тот же вход — выберите что-то одно")
 	case p.file == "" && strings.TrimSpace(p.inputDir) == "":
-		return fmt.Errorf("не задан вход: передайте --file <документ.docx> или --input-dir <каталог>")
+		return fmt.Errorf("не задан вход: передайте --file <документ> или --input-dir <каталог>")
 	}
 	return nil
 }
@@ -134,6 +138,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `Использование:
   tenderguy --input-dir <каталог> [--format text|json]
   tenderguy --command parse-docx --file <документ.docx> [--with-text] [--format text|json]
+  tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
 
 Флаги:
 `)
