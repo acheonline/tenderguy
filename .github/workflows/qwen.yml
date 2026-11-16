@@ -24,10 +24,11 @@ jobs:
           # Извлекаем текст комментария, отрезая упоминание бота
           PROMPT=$(echo "${{ github.event.comment.body }}" | sed 's/@qwencoder//g')
           
-          # Запускаем Qwen с правильными флагами из справки CLI
+          # Запускаем Qwen с правильными флагами (добавлен --auth-type openai)
           qwen --yolo \
             --prompt "$PROMPT" \
             --output-format text \
+            --auth-type openai \
             --openai-api-key "$MY_API_KEY" \
             --openai-base-url "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1" \
             --model auto
