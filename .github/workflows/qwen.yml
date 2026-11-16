@@ -14,3 +14,7 @@ jobs:
           qwen_api_key: ${{ secrets.QWEN_API_KEY }}
           openai_base_url: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
           model: qwen3.8-max
+        env:
+          OPENAI_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          OPENAI_BASE_URL: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
+          OPENAI_MODEL: qwen3.8-max
