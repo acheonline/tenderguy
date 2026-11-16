@@ -61,7 +61,7 @@ import "testing"
 
 func TestAdd(t *testing.T) {
 	tests := []struct {
-		name     string
+		name      string
 		a, b, sum int
 	}{
 		{"positive", 2, 3, 5},
