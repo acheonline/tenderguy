@@ -435,7 +435,9 @@ func (p *docxParser) inline(n *node, sb *strings.Builder) {
 	case "softHyphen", "sym", "footnoteReference", "endnoteReference", "fldChar":
 		// невидимый разделитель, глиф спецшрифта или ссылка на сноску: текста здесь нет
 	case "txbxContent":
-		text := strings.TrimRight(renderBlocks(p.blocks(n, 0), true), "\n")
+		// Текст надписи попадает и в показ, и в сверку полноты, поэтому ячейки
+		// внутри него рендерятся без обрезки краёв — как extractedBlob.
+		text := strings.TrimRight(renderBlocks(p.blocks(n, 0), true, false), "\n")
 		if text != "" {
 			sb.WriteString(text)
 			sb.WriteString("\n")
