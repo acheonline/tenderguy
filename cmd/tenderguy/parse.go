@@ -11,10 +11,12 @@ import (
 )
 
 // Команды CLI. Значения совпадают с именами шагов P1: scan — обход (P1.1),
-// parse-docx — извлечение текста и таблиц (P1.2).
+// parse-docx — извлечение текста и таблиц (P1.2), parse-pdf — текстовый слой
+// и OCR сканов (P1.4).
 const (
 	commandScan      = "scan"
 	commandParseDocx = "parse-docx"
+	commandParsePdf  = "parse-pdf"
 )
 
 // parseDocx разбирает .docx: одним файлом (--file) или всеми .docx каталога
