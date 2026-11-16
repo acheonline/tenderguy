@@ -140,14 +140,17 @@ func paragraphBlocks(blocks []Block) int {
 // Ячейки, закрытые вертикальным слиянием, в вывод не входят (Word их не показывает);
 // они сохранены в модели и учитываются проверкой полноты.
 func (d *Document) Text() string {
-	return renderBlocks(d.Blocks, false)
+	return renderBlocks(d.Blocks, false, true)
 }
 
-// extractedBlob — тот же текст, но со всеми сохранёнными фрагментами модели.
-// Служит «иглой» для проверки полноты: сверять нужно с тем, что парсер донёс,
-// а не с тем, что он решил показать человеку.
+// extractedBlob — тот же текст, но со всеми сохранёнными фрагментами модели и
+// без обрезки пробелов по краям ячеек. Служит «иглой» для проверки полноты:
+// сверять нужно с тем, что парсер донёс, а не с тем, что он решил показать
+// человеку. Обрезка граничных пробелов в показе законна, но фрагмент исходника
+// вроде «…36-89 + неразрывный пробел» тогда не находится дословно и ложно
+// считается потерянным.
 func (d *Document) extractedBlob() string {
-	return renderBlocks(d.Blocks, true)
+	return renderBlocks(d.Blocks, true, false)
 }
 
 // Complete — признак «потерь нет»: им же проверяется готовность задачи P1.2.
@@ -155,11 +158,14 @@ func (d *Document) Complete() bool {
 	return d.Coverage.Complete
 }
 
-func renderBlocks(blocks []Block, includeMerged bool) string {
+// renderBlocks собирает текст из блоков. includeMerged — включать ли ячейки,
+// закрытые вертикальным слиянием; trim — обрезать ли пробелы по краям ячеек
+// (показ человеку — да, сверка полноты — нет).
+func renderBlocks(blocks []Block, includeMerged, trim bool) string {
 	var sb strings.Builder
 	for _, b := range blocks {
 		if b.Table != nil {
-			sb.WriteString(renderTable(*b.Table, includeMerged))
+			sb.WriteString(renderTable(*b.Table, includeMerged, trim))
 		} else {
 			sb.WriteString(b.Text)
 		}
@@ -168,7 +174,7 @@ func renderBlocks(blocks []Block, includeMerged bool) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-func renderTable(t Table, includeMerged bool) string {
+func renderTable(t Table, includeMerged, trim bool) string {
 	lines := make([]string, 0, len(t.Rows))
 	for _, row := range t.Rows {
 		cells := make([]string, 0, len(row.Cells))
@@ -179,9 +185,9 @@ func renderTable(t Table, includeMerged bool) string {
 			}
 			text := cell.Text
 			for _, nested := range cell.Tables {
-				text += "\n" + renderTable(*nested, includeMerged)
+				text += "\n" + renderTable(*nested, includeMerged, trim)
 			}
-			cells = append(cells, flattenLines(text))
+			cells = append(cells, flattenLines(text, trim))
 		}
 		lines = append(lines, strings.Join(cells, "\t"))
 	}
@@ -189,9 +195,13 @@ func renderTable(t Table, includeMerged bool) string {
 }
 
 // flattenLines сводит многострочный текст ячейки в одну строку табличного вывода,
-// чтобы строка таблицы всегда соответствовала одной строке текста.
-func flattenLines(text string) string {
-	return strings.NewReplacer("\n", " ", "\t", " ").Replace(strings.TrimSpace(text))
+// чтобы строка таблицы всегда соответствовала одной строке текста. Обрезка краёв —
+// только для показа: проверка полноты ищет фрагменты исходника дословно.
+func flattenLines(text string, trim bool) string {
+	if trim {
+		text = strings.TrimSpace(text)
+	}
+	return strings.NewReplacer("\n", " ", "\t", " ").Replace(text)
 }
 
 func runeCount(parts ...string) int {

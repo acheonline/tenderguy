@@ -296,7 +296,7 @@ func TestParseDocxZdEfBlockAnchors(t *testing.T) {
 		for _, b := range doc.Blocks {
 			text := b.Text
 			if b.Table != nil {
-				text = renderTable(*b.Table, false)
+				text = renderTable(*b.Table, false, true)
 			}
 			if strings.Contains(text, fragment) {
 				block = b.Index
