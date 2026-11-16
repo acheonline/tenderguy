@@ -29,6 +29,17 @@ jobs:
             echo "Go-файлов пока нет — lint/build/test пропускаются."
           fi
 
+      # parse-pdf (P1.4) собран на gosseract — это cgo-биндинг к libtesseract,
+      # поэтому без dev-пакетов не грузится даже пакет internal/parser при
+      # typecheck у golangci-lint; тесты PDF дополнительно требуют poppler и
+      # русский языковой пакет Tesseract.
+      - name: Install PDF toolchain (poppler, Tesseract)
+        if: steps.has-go.outputs.found == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y poppler-utils tesseract-ocr tesseract-ocr-rus \
+            libtesseract-dev libleptonica-dev
+
       - name: golangci-lint
         if: steps.has-go.outputs.found == 'true'
         uses: golangci/golangci-lint-action@v6
