@@ -3,7 +3,9 @@
 // Задача P1.1: принять путь к каталогу с документами, найти в нём все файлы
 // и классифицировать их по типу (.docx/.xlsx/.pdf и прочие). Задача P1.2:
 // командой --command parse-docx извлечь из .docx текст и таблицы и показать,
-// что извлечение прошло без потерь. Пути в коде не фиксируются — каталог
+// что извлечение прошло без потерь. Задача P1.3: командой --command
+// parse-xlsx прочитали ячейки и формулы книг Excel (.xlsx), сверив их с
+// XML-эталоном книги. Пути в коде не фиксируются — каталог
 // задаётся только флагом --input-dir.
 package main
 
@@ -44,11 +46,11 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы) или parse-pdf (текстовый слой и OCR)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы) или parse-pdf (текстовый слой и OCR)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
-	fs.StringVar(&p.file, "file", "", "один документ (.docx или .pdf) для разбора (вместо каталога)")
+	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
-	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст документов целиком (parse-docx, parse-pdf)")
+	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст документов целиком (parse-docx, parse-xlsx, parse-pdf)")
 	return fs, p
 }
 
@@ -74,6 +76,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	if p.command == commandParseDocx {
 		return parseDocx(p, stdout, stderr)
+	}
+	if p.command == commandParseXlsx {
+		return parseXlsx(p, stdout, stderr)
 	}
 	if p.command == commandParsePdf {
 		return parsePdf(p, stdout, stderr)
@@ -105,20 +110,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 // дешевле показать сразу, чем в процессе разбора каталога.
 func checkFlags(p *params) error {
 	switch p.command {
-	case commandScan, commandParseDocx, commandParsePdf:
+	case commandScan, commandParseDocx, commandParseXlsx, commandParsePdf:
 	default:
-		return fmt.Errorf("неизвестный --command %q, допустимы %s, %s и %s", p.command,
-			commandScan, commandParseDocx, commandParsePdf)
+		return fmt.Errorf("неизвестный --command %q, допустимы %s, %s, %s и %s", p.command,
+			commandScan, commandParseDocx, commandParseXlsx, commandParsePdf)
 	}
 	if p.format != "text" && p.format != "json" {
 		return fmt.Errorf("неизвестный --format %q, допустимы text и json", p.format)
 	}
 	if p.command == commandScan {
 		if p.file != "" {
-			return fmt.Errorf("--file работает только с командами разбора (%s, %s)", commandParseDocx, commandParsePdf)
+			return fmt.Errorf("--file работает только с командами разбора (%s, %s, %s)",
+				commandParseDocx, commandParseXlsx, commandParsePdf)
 		}
 		if p.withText {
-			return fmt.Errorf("--with-text работает только с командами разбора (%s, %s)", commandParseDocx, commandParsePdf)
+			return fmt.Errorf("--with-text работает только с командами разбора (%s, %s, %s)",
+				commandParseDocx, commandParseXlsx, commandParsePdf)
 		}
 		if strings.TrimSpace(p.inputDir) == "" {
 			return fmt.Errorf("не задан каталог с документами")
@@ -138,6 +145,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `Использование:
   tenderguy --input-dir <каталог> [--format text|json]
   tenderguy --command parse-docx --file <документ.docx> [--with-text] [--format text|json]
+  tenderguy --command parse-xlsx --file <книга.xlsx>   [--with-text] [--format text|json]
   tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
 
 Флаги:
