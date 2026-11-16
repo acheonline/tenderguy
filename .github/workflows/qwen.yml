@@ -2,6 +2,7 @@ name: Qwen Code Action
 on:
   issue_comment:
     types: [created]
+
 jobs:
   qwen:
     if: contains(github.event.comment.body, '@qwencoder')
@@ -12,9 +13,4 @@ jobs:
         uses: QwenLM/qwen-code-action@v1
         with:
           qwen_api_key: ${{ secrets.QWEN_API_KEY }}
-          openai_base_url: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
-          model: qwen3.8-max
-        env:
-          OPENAI_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          OPENAI_BASE_URL: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
-          OPENAI_MODEL: qwen3.8-max
+          qwen_model: qwen3.8-max
