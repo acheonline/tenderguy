@@ -57,7 +57,7 @@ jobs:
 
           qwen --yolo \
             --auth-type openai \
-            -model qwen3.8-flash \
+            --model qwen3.8-flash \
             --output-format text \
             --channel CI \
             --prompt "$(cat "$PROMPT_FILE")" 2>&1 | tee "${RUNNER_TEMP}/qwen-output.log"
