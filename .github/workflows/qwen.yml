@@ -49,15 +49,15 @@ jobs:
               "$ISSUE_URL" "$ISSUE_TITLE" "$ISSUE_BODY"
             printf 'Задача из комментария (выполни её полностью):\n%s\n\n' "$COMMENT_BODY"
             printf 'Правила:\n'
+            printf -- '- НЕ читай файлы tz.md, issues.md, poc.md, analyze*.md, CONTRIBUTING.md. Используй только текст Issue и код в папке internal/.\n'
             printf -- '- Отвечай на языке issue.\n'
-            printf -- '- При работе с кодом следуй CONTRIBUTING.md.\n'
             printf -- '- НЕ выполняй git commit/push и не создавай PR — это сделает следующий шаг workflow.\n'
             printf -- '- Никогда не выводи и не записывай в файлы значения переменных окружения с ключами.\n'
           } > "$PROMPT_FILE"
 
           qwen --yolo \
             --auth-type openai \
-            --model qwen3-coder-plus \
+            --model qwen3.8-flash \
             --output-format text \
             --channel CI \
             --prompt "$(cat "$PROMPT_FILE")" 2>&1 | tee "${RUNNER_TEMP}/qwen-output.log"
