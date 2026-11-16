@@ -11,4 +11,6 @@ jobs:
       - name: Qwen Code
         uses: QwenLM/qwen-code-action@v1
         with:
-          openai_api_key: ${{ secrets.QWEN_API_KEY }}
+          qwen_api_key: ${{ secrets.QWEN_API_KEY }}
+          openai_base_url: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
+          model: qwen3.8-max
