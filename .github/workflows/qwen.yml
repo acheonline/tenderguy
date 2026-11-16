@@ -1,4 +1,5 @@
 name: Qwen Code Action
+
 on:
   issue_comment:
     types: [created]
@@ -8,8 +9,10 @@ jobs:
     if: contains(github.event.comment.body, '@qwencoder')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Qwen Code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Qwen Code
         uses: QwenLM/qwen-code-action@v1
         with:
           qwen_api_key: ${{ secrets.QWEN_API_KEY }}
