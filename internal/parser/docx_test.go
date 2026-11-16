@@ -563,6 +563,33 @@ func TestParseDocxKeepsEveryFragment(t *testing.T) {
 	}
 }
 
+// TestParseDocxBoundarySpacesAreNotLoss — регрессия против ложных «потерь»:
+// фрагменты, начинающиеся и заканчивающиеся пробелом (в том числе неразрывным),
+// лежат на краях ячеек таблицы. Показ человеку обрезает края, но дословная
+// сверка полноты обязана находить такие фрагменты. Без этого реальные
+// закупочные документы (ЗД ЭФ, Том 1 Техснабэкспорта) получали вердикт «с потерями».
+func TestParseDocxBoundarySpacesAreNotLoss(t *testing.T) {
+	body := `<w:tbl><w:tr>` +
+		`<w:tc><w:p><w:r><w:t xml:space="preserve"> заполненное по форме 1</w:t></w:r></w:p></w:tc>` +
+		`<w:tc><w:p><w:r><w:t xml:space="preserve">Тула, ул.Пионеров,36-89` + "\u00a0" + `</w:t></w:r></w:p></w:tc>` +
+		`</w:tr></w:tbl>` +
+		`<w:p><w:r><w:t xml:space="preserve">Наименование документа </w:t></w:r></w:p>`
+	doc := parseBody(t, body)
+
+	if !doc.Coverage.Complete {
+		t.Fatalf("граничные пробелы сочтены потерей: %+v", doc.Coverage)
+	}
+	if doc.Coverage.MissingPieces != 0 || len(doc.Coverage.Missing) != 0 {
+		t.Errorf("MissingPieces = %d, Missing = %q", doc.Coverage.MissingPieces, doc.Coverage.Missing)
+	}
+	// Показ обрезает края ячеек: ведущий пробел и хвостовой неразрывный пробел
+	// в вывод не попадают, содержимое ячеек разделено табуляцией.
+	want := "заполненное по форме 1\tТула, ул.Пионеров,36-89\nНаименование документа "
+	if got := doc.Text(); got != want {
+		t.Errorf("Text() = %q, хотели %q", got, want)
+	}
+}
+
 // TestCheckCoverageDetectsLoss проверяет сам механизм: модель с намеренно
 // выброшенным абзацем должна быть признана неполной.
 func TestCheckCoverageDetectsLoss(t *testing.T) {
