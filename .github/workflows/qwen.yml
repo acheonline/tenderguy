@@ -1,4 +1,4 @@
-name: Qwen Code Action
+name: Qwen Code (self-hosted VPS)
 
 on:
   issue_comment:
@@ -9,53 +9,93 @@ permissions:
   pull-requests: write
   issues: write
 
+# Один self-hosted runner: не запускать job'ы параллельно
+concurrency:
+  group: qwen-vps
+  cancel-in-progress: false
+
 jobs:
   qwen:
-    # Бот работает только для вас и только на вашем VPS
+    # Бот реагирует только на @qwencoder и только от владельца репозитория
     if: contains(github.event.comment.body, '@qwencoder') && github.actor == 'acheonline'
     runs-on: [self-hosted, vps]
+
+    env:
+      PATH: /home/runner/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          clean: true
 
       - name: Run Qwen Code
         env:
-          MY_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          OPENAI_BASE_URL: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          PROMPT=$(echo "${{ github.event.comment.body }}" | sed 's/@qwencoder//g')
-          qwen --approval-mode auto \
-            --prompt "$PROMPT" \
-            --output-format text \
-            --auth-type openai \
-            --openai-api-key "$MY_API_KEY" \
-            --openai-base-url "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1" \
-            --model auto
+          set -euo pipefail
 
-      - name: Create Branch, Commit, and Open PR
+          PROMPT_FILE="$(mktemp -p "${RUNNER_TEMP}" qwen-prompt.XXXXXX.md)"
+          trap 'rm -f "$PROMPT_FILE"' EXIT
+
+          {
+            printf 'Ты работаешь в клоне репозитория tenderguy (текущая директория).\n\n'
+            printf 'Issue: %s\nЗаголовок: %s\n\nТело issue:\n%s\n\n' \
+              "$ISSUE_URL" "$ISSUE_TITLE" "$ISSUE_BODY"
+            printf 'Задача из комментария (выполни её полностью):\n%s\n\n' "$COMMENT_BODY"
+            printf 'Правила:\n'
+            printf '- Отвечай на языке issue.\n'
+            printf '- При работе с кодом следуй CONTRIBUTING.md.\n'
+            printf '- НЕ выполняй git commit/push и не создавай PR — это сделает следующий шаг workflow.\n'
+            printf '- Никогда не выводи и не записывай в файлы значения переменных окружения с ключами.\n'
+          } > "$PROMPT_FILE"
+
+          qwen --yolo \
+            --auth-type openai \
+            --model auto \
+            --output-format text \
+            --channel CI \
+            --prompt "$(cat "$PROMPT_FILE")" 2>&1 | tee "${RUNNER_TEMP}/qwen-output.log"
+
+          {
+            echo '### Qwen Code output'
+            echo '```'
+            tail -c 60000 "${RUNNER_TEMP}/qwen-output.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create branch, commit and open PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          git config --global user.name "Qwen Bot"
-          git config --global user.email "qwen-bot@users.noreply.github.com"
-          
-          if [[ -z $(git status --porcelain) ]]; then
-            echo "Нет изменений для коммита."
+          set -euo pipefail
+
+          if [[ -z "$(git status --porcelain)" ]]; then
+            echo "Изменений нет — ветка и PR не создаются."
             exit 0
           fi
-          
-          BRANCH_NAME="qwen/issue-${ISSUE_NUMBER}"
-          git checkout -b "$BRANCH_NAME"
+
+          git config user.name "qwencoder-bot"
+          git config user.email "qwencoder-bot@users.noreply.github.com"
+
+          BRANCH="qwen/issue-${ISSUE_NUMBER}-${RUN_ID}"
+          git checkout -b "$BRANCH"
           git add -A
-          git commit -m "feat: Qwen changes for issue #${ISSUE_NUMBER} [skip ci]"
-          git push origin "$BRANCH_NAME"
-          
-          gh pr create \
+          git commit -m "Qwen: изменения по задаче #${ISSUE_NUMBER}"
+          git push -u origin "$BRANCH"
+
+          PR_URL=$(gh pr create \
             --base main \
-            --head "$BRANCH_NAME" \
-            --title "Qwen: Изменения по задаче #${ISSUE_NUMBER}" \
-            --body "Автоматический PR от Qwen Code на Self-Hosted VPS."
+            --head "$BRANCH" \
+            --title "Qwen: изменения по задаче #${ISSUE_NUMBER}" \
+            --body "Автоматический PR от Qwen Code (self-hosted VPS). Issue: #${ISSUE_NUMBER}. Trigger run: ${RUN_ID}.")
+
+          echo "Создан PR: $PR_URL"
+          gh issue comment "$ISSUE_NUMBER" --body "Готово, изменения в PR: $PR_URL"
