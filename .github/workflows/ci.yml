@@ -1,0 +1,44 @@
+name: Go CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: lint + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Detect Go sources
+        id: has-go
+        run: |
+          if [[ -n "$(git ls-files '*.go')" ]]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "Go-файлов пока нет — lint/build/test пропускаются."
+          fi
+
+      - name: golangci-lint
+        if: steps.has-go.outputs.found == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.5
+
+      - name: Build
+        if: steps.has-go.outputs.found == 'true'
+        run: go build ./...
+
+      - name: Test
+        if: steps.has-go.outputs.found == 'true'
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
