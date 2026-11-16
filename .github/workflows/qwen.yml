@@ -18,13 +18,16 @@ jobs:
       - name: Run Qwen Code
         env:
           MY_API_KEY: ${{ secrets.QWEN_API_KEY }}
-          OPENAI_BASE_URL: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
-          OPENAI_MODEL: auto
         run: |
-          echo "Проверка: длина ключа из секрета = ${#MY_API_KEY} символов"
+          echo "Проверка: длина ключа = ${#MY_API_KEY} символов"
           
           # Извлекаем текст комментария, отрезая упоминание бота
           PROMPT=$(echo "${{ github.event.comment.body }}" | sed 's/@qwencoder//g')
           
-          # Запускаем Qwen с явной передачей ключа
-          qwen --yolo --prompt "$PROMPT" --output-format text --api-key "$MY_API_KEY"
+          # Запускаем Qwen с правильными флагами из справки CLI
+          qwen --yolo \
+            --prompt "$PROMPT" \
+            --output-format text \
+            --openai-api-key "$MY_API_KEY" \
+            --openai-base-url "https://token-plan.maas.qwencloudapi.com/compatible-mode/v1" \
+            --model auto
