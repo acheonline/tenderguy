@@ -1,0 +1,14 @@
+name: Qwen Code Action
+on:
+  issue_comment:
+    types: [created]
+jobs:
+  qwen:
+    if: contains(github.event.comment.body, '@qwencoder')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Qwen Code
+        uses: QwenLM/qwen-code-action@v1
+        with:
+          openai_api_key: ${{ secrets.QWEN_API_KEY }}
