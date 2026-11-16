@@ -49,10 +49,10 @@ jobs:
               "$ISSUE_URL" "$ISSUE_TITLE" "$ISSUE_BODY"
             printf 'Задача из комментария (выполни её полностью):\n%s\n\n' "$COMMENT_BODY"
             printf 'Правила:\n'
-            printf '- Отвечай на языке issue.\n'
-            printf '- При работе с кодом следуй CONTRIBUTING.md.\n'
-            printf '- НЕ выполняй git commit/push и не создавай PR — это сделает следующий шаг workflow.\n'
-            printf '- Никогда не выводи и не записывай в файлы значения переменных окружения с ключами.\n'
+            printf -- '- Отвечай на языке issue.\n'
+            printf -- '- При работе с кодом следуй CONTRIBUTING.md.\n'
+            printf -- '- НЕ выполняй git commit/push и не создавай PR — это сделает следующий шаг workflow.\n'
+            printf -- '- Никогда не выводи и не записывай в файлы значения переменных окружения с ключами.\n'
           } > "$PROMPT_FILE"
 
           qwen --yolo \
