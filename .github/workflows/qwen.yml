@@ -13,4 +13,8 @@ jobs:
         uses: QwenLM/qwen-code-action@v1
         with:
           qwen_api_key: ${{ secrets.QWEN_API_KEY }}
-          qwen_model: qwen3.8-max
+          model: qwen3.8-max
+        env:
+          OPENAI_API_KEY: ${{ secrets.QWEN_API_KEY }}
+          OPENAI_BASE_URL: https://token-plan.maas.qwencloudapi.com/compatible-mode/v1
+          OPENAI_MODEL: qwen3.8-max
