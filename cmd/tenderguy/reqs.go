@@ -7,14 +7,14 @@ import (
 	"path/filepath"
 	"strings"
 
-	"tenderguy/internal/parser"
 	"tenderguy/internal/reqs"
 	"tenderguy/internal/scanner"
 )
 
 // extractReqs формирует карточку реквизитов (P1.5): разбирает документ своим
-// парсером формата (docx/xlsx/pdf — P1.2/P1.3/P1.4), по извлечённому тексту
-// ищет ИНН/КПП/ОГРН/даты/суммы и проверяет контрольные числа.
+// парсером формата (docx/xlsx/pdf — P1.2/P1.3/P1.4) на фрагменты с адресами
+// (P1.6), по ним ищет ИНН/КПП/ОГРН/даты/суммы, проверяет контрольные числа и
+// запоминает, где в источнике стоит каждое значение.
 func extractReqs(p *params, stdout, stderr io.Writer) int {
 	targets, err := reqsTargets(p)
 	if err != nil {
@@ -28,12 +28,12 @@ func extractReqs(p *params, stdout, stderr io.Writer) int {
 
 	rep := &reqsReport{}
 	for _, t := range targets {
-		text, err := documentText(t.path, t.kind)
+		frags, err := documentFragments(t.path, t.kind)
 		if err != nil {
 			rep.Failed = append(rep.Failed, failedDoc{Path: t.path, Error: err.Error()})
 			continue
 		}
-		rep.Cards = append(rep.Cards, reqs.Extract(t.path, t.kind, text))
+		rep.Cards = append(rep.Cards, reqs.Extract(t.path, t.kind, frags))
 	}
 
 	if p.format == "json" {
@@ -51,13 +51,19 @@ func extractReqs(p *params, stdout, stderr io.Writer) int {
 			len(rep.Failed), suspects)
 		return exitProblems
 	}
+	if untraced := rep.untracedCount(); untraced > 0 {
+		// Значение без адреса — это дыра в парсере, а не свойство документа:
+		// замечание P2 по такому значению некуда показать.
+		fmt.Fprintf(stderr, "tenderguy: значений без адреса в источнике %d — они помечены @ БЕЗ АДРЕСА в отчёте\n", untraced)
+		return exitProblems
+	}
 	if suspects > 0 {
 		fmt.Fprintf(stderr, "tenderguy: подозрительных значений %d — они помечены ✗ в отчёте\n", suspects)
 	}
 	return exitOK
 }
 
-// reqsTarget — файл и формат, из которого будем брать текст.
+// reqsTarget — файл и формат, из которого будем брать содержимое.
 type reqsTarget struct {
 	path string
 	kind string
@@ -101,32 +107,6 @@ func kindByExtension(path string) string {
 	}
 }
 
-// documentText извлекает текст документа парсером его формата.
-func documentText(path, kind string) (string, error) {
-	switch kind {
-	case string(scanner.KindDocx):
-		doc, err := parser.ParseDocx(path)
-		if err != nil {
-			return "", err
-		}
-		return doc.Text(), nil
-	case string(scanner.KindXlsx):
-		doc, err := parser.ParseXlsx(path)
-		if err != nil {
-			return "", err
-		}
-		return doc.Text(), nil
-	case string(scanner.KindPdf):
-		doc, err := parser.ParsePdf(path)
-		if err != nil {
-			return "", err
-		}
-		return doc.Text(), nil
-	default:
-		return "", fmt.Errorf("неизвестный формат %q", kind)
-	}
-}
-
 // reqsReport — результат команды extract-reqs.
 type reqsReport struct {
 	Cards  []*reqs.Card `json:"cards"`
@@ -137,6 +117,17 @@ func (r *reqsReport) suspectCount() int {
 	n := 0
 	for _, c := range r.Cards {
 		n += c.Suspect
+	}
+	return n
+}
+
+// untracedCount — значений без адреса в источнике. По критерию P1.6 их должно
+// быть ноль: непустой счёт означает, что парсер формата отдал фрагмент без
+// координат, то есть дыру в разборе, а не свойство документа.
+func (r *reqsReport) untracedCount() int {
+	n := 0
+	for _, c := range r.Cards {
+		n += c.Total - c.Traced
 	}
 	return n
 }
@@ -178,8 +169,8 @@ func writeReqsText(w io.Writer, rep *reqsReport) {
 			cardsWithReqs++
 		}
 	}
-	fmt.Fprintf(w, "Карточек: %d (с реквизитами %d), файлов без карточки %d, подозрительных значений %d\n",
-		len(rep.Cards), cardsWithReqs, len(rep.Failed), rep.suspectCount())
+	fmt.Fprintf(w, "Карточек: %d (с реквизитами %d), файлов без карточки %d, подозрительных значений %d, значений без адреса %d\n",
+		len(rep.Cards), cardsWithReqs, len(rep.Failed), rep.suspectCount(), rep.untracedCount())
 
 	for _, c := range rep.Cards {
 		fmt.Fprintf(w, "\n%s (%s)\n", c.Name, c.Format)
@@ -198,6 +189,7 @@ func writeReqsText(w io.Writer, rep *reqsReport) {
 			if it.Label != "" {
 				line += fmt.Sprintf(" [метка: %s]", it.Label)
 			}
+			line += refsNote(it)
 			if !it.Valid {
 				line += fmt.Sprintf(" — %s", it.Reason)
 			}
@@ -214,4 +206,19 @@ func writeReqsText(w io.Writer, rep *reqsReport) {
 			fmt.Fprintf(w, "  ! %s — %s\n", filepath.Base(f.Path), f.Error)
 		}
 	}
+}
+
+// refsNote — адрес значения в источнике для строки отчёта. Файл назван в шапке
+// карточки, поэтому показывается только место в нём; если адресов несколько,
+// второй и далее сворачиваются в счётчик — строка отчёта обязана оставаться
+// одной строкой.
+func refsNote(it reqs.Item) string {
+	if len(it.Refs) == 0 {
+		return " @ БЕЗ АДРЕСА"
+	}
+	note := " @ " + it.Refs[0].Where()
+	if extra := it.RefTotal - 1; extra > 0 {
+		note += fmt.Sprintf(" (+%d)", extra)
+	}
+	return note
 }
