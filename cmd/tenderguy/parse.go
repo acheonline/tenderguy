@@ -12,13 +12,23 @@ import (
 
 // Команды CLI. Значения совпадают с именами шагов P1: scan — обход (P1.1),
 // parse-docx — извлечение текста и таблиц (P1.2), parse-xlsx — ячейки и
-// формулы книг Excel (P1.3), parse-pdf — текстовый слой и OCR сканов (P1.4).
+// формулы книг Excel (P1.3), parse-pdf — текстовый слой и OCR сканов (P1.4),
+// extract-reqs — карточка реквизитов поверх парсеров (P1.5).
 const (
-	commandScan      = "scan"
-	commandParseDocx = "parse-docx"
-	commandParseXlsx = "parse-xlsx"
-	commandParsePdf  = "parse-pdf"
+	commandScan        = "scan"
+	commandParseDocx   = "parse-docx"
+	commandParseXlsx   = "parse-xlsx"
+	commandParsePdf    = "parse-pdf"
+	commandExtractReqs = "extract-reqs"
 )
+
+// allCommands — что принимает --command: список идёт и в справку, и в
+// сообщение об ошибке, чтобы оно не разъезжалось с реальным набором команд.
+var allCommands = []string{commandScan, commandParseDocx, commandParseXlsx, commandParsePdf, commandExtractReqs}
+
+// parseCommands — команды разбора содержимого (кроме scan): у них вход задаёт
+// --file или --input-dir, а --with-text печатает извлечённый текст.
+var parseCommands = []string{commandParseDocx, commandParseXlsx, commandParsePdf}
 
 // parseDocx разбирает .docx: одним файлом (--file) или всеми .docx каталога
 // (--input-dir), найденными обходом.
