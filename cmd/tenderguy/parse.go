@@ -14,7 +14,8 @@ import (
 // parse-docx — извлечение текста и таблиц (P1.2), parse-xlsx — ячейки и
 // формулы книг Excel (P1.3), parse-pdf — текстовый слой и OCR сканов (P1.4),
 // extract-reqs — карточка реквизитов поверх парсеров (P1.5), trace — адреса
-// фрагментов в источнике и проверка 100 % трассируемости (P1.6).
+// фрагментов в источнике и проверка 100 % трассируемости (P1.6), dump-docs —
+// сохранение всех извлечённых данных в docs.json (P1.8).
 const (
 	commandScan        = "scan"
 	commandParseDocx   = "parse-docx"
@@ -22,11 +23,12 @@ const (
 	commandParsePdf    = "parse-pdf"
 	commandExtractReqs = "extract-reqs"
 	commandTrace       = "trace"
+	commandDumpDocs    = "dump-docs"
 )
 
 // allCommands — что принимает --command: список идёт и в справку, и в
 // сообщение об ошибке, чтобы оно не разъезжалось с реальным набором команд.
-var allCommands = []string{commandScan, commandParseDocx, commandParseXlsx, commandParsePdf, commandExtractReqs, commandTrace}
+var allCommands = []string{commandScan, commandParseDocx, commandParseXlsx, commandParsePdf, commandExtractReqs, commandTrace, commandDumpDocs}
 
 // parseCommands — команды разбора содержимого (кроме scan): у них вход задаёт
 // --file или --input-dir, а --with-text печатает извлечённый текст.

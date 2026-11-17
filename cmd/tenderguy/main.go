@@ -9,8 +9,10 @@
 // парсеров форматов собрать карточку реквизитов файла. Задача P1.6: командой
 // --command trace разложить документы на фрагменты и проверить, что у каждого
 // из них и у каждого реквизита есть адрес в источнике — файл плюс страница
-// или пункт. Пути в коде не фиксируются — каталог задаётся только флагом
-// --input-dir.
+// или пункт. Задача P1.8: командой --command dump-docs сохранить все
+// извлечённые данные — текст, таблицы, реквизиты и адреса фрагментов — в
+// файл docs.json в каталоге, переданном флагом --output-dir. Пути в коде не
+// фиксируются — каталог задаётся только флагом --input-dir.
 package main
 
 import (
@@ -38,11 +40,12 @@ func main() {
 
 // params — разобранные флаги вызова.
 type params struct {
-	inputDir string
-	file     string
-	command  string
-	format   string
-	withText bool
+	inputDir  string
+	outputDir string
+	file      string
+	command   string
+	format    string
+	withText  bool
 }
 
 // newFlagSet собирает флаги; отдельная функция нужна, чтобы справку можно было проверить в тесте.
@@ -50,8 +53,9 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов) или trace (адреса фрагментов и трассируемость)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость) или dump-docs (сохранение всех данных в docs.json)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
+	fs.StringVar(&p.outputDir, "output-dir", "", "каталог для docs.json (обязателен только для dump-docs)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
 	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст целиком (parse-docx, parse-xlsx, parse-pdf) или список фрагментов с адресами (trace)")
@@ -93,6 +97,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if p.command == commandTrace {
 		return traceCmd(p, stdout, stderr)
 	}
+	if p.command == commandDumpDocs {
+		return dumpCmd(p, stdout, stderr)
+	}
 
 	res, err := scanner.Scan(p.inputDir)
 	if err != nil {
@@ -124,6 +131,22 @@ func checkFlags(p *params) error {
 	}
 	if p.format != "text" && p.format != "json" {
 		return fmt.Errorf("неизвестный --format %q, допустимы text и json", p.format)
+	}
+	// --output-dir принадлежит только dump-docs: у остальных команд он
+	// означал бы молчаливо проигнорированный флаг. На dump-docs --format не
+	// влияет — вывод всегда json-файл.
+	if p.command == commandDumpDocs {
+		if strings.TrimSpace(p.outputDir) == "" {
+			return fmt.Errorf("не задан каталог вывода: %s требует --output-dir", commandDumpDocs)
+		}
+		if p.file != "" {
+			return fmt.Errorf("--file не используется в %s: команда обходит весь каталог --input-dir", commandDumpDocs)
+		}
+		if p.withText {
+			return fmt.Errorf("--with-text не используется в %s: содержимое всегда записывается в %s", commandDumpDocs, dumpFileName)
+		}
+	} else if strings.TrimSpace(p.outputDir) != "" {
+		return fmt.Errorf("--output-dir используется только командой %s", commandDumpDocs)
 	}
 	if p.command == commandScan {
 		if p.file != "" {
@@ -168,6 +191,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
   tenderguy --command extract-reqs (--file <документ> | --input-dir <каталог>) [--format text|json]
   tenderguy --command trace (--file <документ> | --input-dir <каталог>) [--with-text] [--format text|json]
+  tenderguy --command dump-docs --input-dir <каталог> --output-dir <каталог>
 
 Флаги:
 `)

@@ -11,6 +11,9 @@ coverage.out
 coverage.html
 *.test
 
+# Выгрузки dump-docs: --output-dir по умолчанию указывают сюда (P1.8)
+/out/
+
 # Локальные черновики инструментов
 .qwen/tmp/
 .idea/workspace.xml
