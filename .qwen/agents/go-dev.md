@@ -1,6 +1,7 @@
 ---
 name: go-dev
 description: Реализует задачи [P*] из GitHub Issues на Go в tenderguy — парсинг документов (docx/xlsx/pdf+OCR), извлечение реквизитов, трассировка, CLI-команды. Использовать ПРОАКТИВНО для любой правки кода по постановке из issue.
+model: fast
 approvalMode: auto-edit
 tools:
   - read_file
