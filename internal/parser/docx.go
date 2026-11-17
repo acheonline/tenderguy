@@ -205,7 +205,39 @@ type docxParser struct {
 	tables int
 	rows   int
 	cells  int
-	notes  map[string]int
+	// page — номер страницы по последней отрисовке Word: растёт на отметках
+	// w:lastRenderedPageBreak и явных разрывах. Нужен для адреса фрагмента (P1.6).
+	page int
+	// firstText — страница первого символа текущего блока; 0 — символ ещё не
+	// встречался. Нужна потому, что Word ставит отметку разбивки перед текстом
+	// новой страницы: блок, начинающийся с неё, относится уже к следующей
+	// странице, а не к той, на которой лежит его начало.
+	firstText int
+	notes     map[string]int
+}
+
+// openBlock начинает разбор блока (или строки таблицы) и возвращает страницу,
+// с которой он начался, и прежнее состояние firstText.
+func (p *docxParser) openBlock() (startPage, before int) {
+	startPage, before = p.page, p.firstText
+	p.firstText = 0
+	return startPage, before
+}
+
+// closeBlock завершает разбор блока: отдаёт страницу его первого символа
+// (или страницу начала, если символа в блоке не было) и восстанавливает
+// firstText так, чтобы внешний блок не потерял собственный первый символ.
+func (p *docxParser) closeBlock(startPage, before int) int {
+	first := p.firstText
+	if before > 0 {
+		p.firstText = before
+	} else {
+		p.firstText = first
+	}
+	if first > 0 {
+		return first
+	}
+	return startPage
 }
 
 func (p *docxParser) notef(format string, args ...any) {
@@ -253,7 +285,7 @@ func ParseDocx(path string) (*Document, error) {
 		return nil, fmt.Errorf("в %s нет тела документа (w:body) — это не документ Word 2007+", filepath.Base(path))
 	}
 
-	p := &docxParser{notes: map[string]int{}}
+	p := &docxParser{notes: map[string]int{}, page: 1}
 	if lenient {
 		p.notef("document.xml разобрался только в нестрогом режиме XML: в разметке есть нарушения")
 	}
@@ -362,34 +394,50 @@ func decodeTree(content string, strict bool) (*node, error) {
 func (p *docxParser) blocks(parent *node, depth int) []Block {
 	var out []Block
 	for _, ch := range parent.effective() {
-		switch ch.local() {
-		case "p":
-			out = append(out, Block{Type: BlockParagraph, Style: paragraphStyle(ch), Text: p.paragraph(ch)})
-		case "tbl":
-			out = append(out, Block{Type: BlockTable, Table: p.table(ch, depth)})
-		case "sdt":
-			out = append(out, p.blocks(ch.child("sdtContent"), depth)...)
-		case "customXml":
-			out = append(out, p.blocks(ch, depth)...)
-		case "altChunk":
-			p.notef("w:altChunk: встроенная внешняя часть OOXML не разобрана — её содержимое осталось в отдельном файле архива")
-		default:
-			if nonText[ch.local()] {
-				continue
+		startPage, before := p.openBlock()
+		blocks := p.block(ch, depth)
+		// Страница снимается после разбора: к этому моменту известно, на какой
+		// странице встал первый символ блока.
+		page := p.closeBlock(startPage, before)
+		for i := range blocks {
+			if blocks[i].Page == 0 {
+				blocks[i].Page = page
 			}
-			// Неизвестный контейнер: вытаскиваем из него текст, чтобы не потерять
-			// содержимое из-за элемента, которого нет в списке разбираемых.
-			var sb strings.Builder
-			p.inline(ch, &sb)
-			text := strings.TrimRight(sb.String(), "\n")
-			if strings.TrimSpace(text) == "" {
-				continue
-			}
-			p.notef("неизвестный блочный элемент <%s>: содержимое извлечено как текст", ch.local())
-			out = append(out, Block{Type: BlockParagraph, Text: text})
 		}
+		out = append(out, blocks...)
 	}
 	return out
+}
+
+// block разбирает один блочный элемент; страница проставляется вызывающим
+// blocks — здесь элемент ещё не разобран целиком.
+func (p *docxParser) block(ch *node, depth int) []Block {
+	switch ch.local() {
+	case "p":
+		return []Block{{Type: BlockParagraph, Style: paragraphStyle(ch), Text: p.paragraph(ch)}}
+	case "tbl":
+		return []Block{{Type: BlockTable, Table: p.table(ch, depth)}}
+	case "sdt":
+		return p.blocks(ch.child("sdtContent"), depth)
+	case "customXml":
+		return p.blocks(ch, depth)
+	case "altChunk":
+		p.notef("w:altChunk: встроенная внешняя часть OOXML не разобрана — её содержимое осталось в отдельном файле архива")
+		return nil
+	}
+	if nonText[ch.local()] {
+		return nil
+	}
+	// Неизвестный контейнер: вытаскиваем из него текст, чтобы не потерять
+	// содержимое из-за элемента, которого нет в списке разбираемых.
+	var sb strings.Builder
+	p.inline(ch, &sb)
+	text := strings.TrimRight(sb.String(), "\n")
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	p.notef("неизвестный блочный элемент <%s>: содержимое извлечено как текст", ch.local())
+	return []Block{{Type: BlockParagraph, Text: text}}
 }
 
 func paragraphStyle(p *node) string {
@@ -421,11 +469,23 @@ func (p *docxParser) inline(n *node, sb *strings.Builder) {
 	switch n.local() {
 	case "t":
 		// w:t — текст абзаца, m:t — формула, a:t — надпись в фигуре.
+		if n.text != "" && p.firstText == 0 {
+			p.firstText = p.page
+		}
 		sb.WriteString(n.text)
 	case "tab":
 		sb.WriteString("\t")
 	case "br", "cr":
+		// Явный разрыв страницы (w:br w:type="page") двигает пагинацию, обычный
+		// перенос строки — нет.
+		if n.local() == "br" && n.attrVal("type") == "page" {
+			p.page++
+		}
 		sb.WriteString("\n")
+	case "lastRenderedPageBreak":
+		// Пустой элемент, который Word ставит на границу раскладки при сохранении:
+		// это единственное, по чему страница в .docx вообще опознаётся.
+		p.page++
 	case "noBreakHyphen":
 		sb.WriteString("-")
 	case "instrText":
@@ -462,6 +522,7 @@ func (p *docxParser) table(n *node, depth int) *Table {
 
 	for _, tr := range items(n, "tr") {
 		p.rows++
+		startPage, before := p.openBlock()
 		row := Row{Index: len(tbl.Rows) + 1, Header: isHeaderRow(tr)}
 		for _, tc := range items(tr, "tc") {
 			p.cells++
@@ -491,6 +552,9 @@ func (p *docxParser) table(n *node, depth int) *Table {
 		if gridCol > width {
 			width = gridCol
 		}
+		// У строки своя страница: таблица переходит через разрыв, и строки на
+		// разных страницах — разные адреса одних и тех же клеток.
+		row.Page = p.closeBlock(startPage, before)
 		tbl.Rows = append(tbl.Rows, row)
 	}
 	tbl.Columns = width
