@@ -1,9 +1,30 @@
 {
+  "tools": {
+    "approvalMode": "auto"
+  },
   "agents": {
     "defaultBackground": false
   },
   "permissions": {
+    "autoMode": {
+      "environment": [
+        "tenderguy — PoC-репозиторий на агентной разработке; рабочий конвейер: ветка feat/* → коммит → push ветки → gh pr create → CI. Мерж в main делает только человек."
+      ],
+      "hints": {
+        "allow": [
+          "go build/vet/test, gofmt, golangci-lint, go env, gh run view/watch/list, jq, curl",
+          "git checkout -b, git add/commit по задаче [P*], git push -u origin feat/* и chore/*",
+          "gh pr create и gh pr comment — доставка результата задачи PoC, часть согласованного конвейера"
+        ],
+        "deny": [
+          "любой merge PR: gh pr merge, gh api .../merge, слияние в main — мерж только руками человека",
+          "git push в main напрямую — только через PR"
+        ]
+      }
+    },
     "deny": [
+      "Bash(gh pr merge*)",
+      "Bash(gh api repos/*pulls/*/merge*)",
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git push origin main*)",
@@ -55,5 +76,6 @@
         ]
       }
     ]
-  }
+  },
+  "$version": 4
 }

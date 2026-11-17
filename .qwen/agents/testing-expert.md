@@ -1,6 +1,7 @@
 ---
 name: testing-expert
 description: Закрывает модули Go в tenderguy unit- и интеграционными тестами — граничные случаи, негативные сценарии, корректные моки и base64-фикстуры документов. Использовать ПРОАКТИВНО после каждой правки кода по задаче [P*].
+model: fast
 approvalMode: auto-edit
 tools:
   - read_file
