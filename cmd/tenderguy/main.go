@@ -5,8 +5,9 @@
 // командой --command parse-docx извлечь из .docx текст и таблицы и показать,
 // что извлечение прошло без потерь. Задача P1.3: командой --command
 // parse-xlsx прочитали ячейки и формулы книг Excel (.xlsx), сверив их с
-// XML-эталоном книги. Пути в коде не фиксируются — каталог
-// задаётся только флагом --input-dir.
+// XML-эталоном книги. Задача P1.5: командой --command extract-reqs поверх
+// парсеров форматов собрать карточку реквизитов файла. Пути в коде не
+// фиксируются — каталог задаётся только флагом --input-dir.
 package main
 
 import (
@@ -46,7 +47,7 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы) или parse-pdf (текстовый слой и OCR)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR) или extract-reqs (карточка реквизитов)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
@@ -83,6 +84,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if p.command == commandParsePdf {
 		return parsePdf(p, stdout, stderr)
 	}
+	if p.command == commandExtractReqs {
+		return extractReqs(p, stdout, stderr)
+	}
 
 	res, err := scanner.Scan(p.inputDir)
 	if err != nil {
@@ -109,28 +113,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 // checkFlags проверяет сочетание флагов до работы с файлами: ошибку в аргументах
 // дешевле показать сразу, чем в процессе разбора каталога.
 func checkFlags(p *params) error {
-	switch p.command {
-	case commandScan, commandParseDocx, commandParseXlsx, commandParsePdf:
-	default:
-		return fmt.Errorf("неизвестный --command %q, допустимы %s, %s, %s и %s", p.command,
-			commandScan, commandParseDocx, commandParseXlsx, commandParsePdf)
+	if !isCommand(p.command) {
+		return fmt.Errorf("неизвестный --command %q, допустимы %s", p.command, strings.Join(allCommands, ", "))
 	}
 	if p.format != "text" && p.format != "json" {
 		return fmt.Errorf("неизвестный --format %q, допустимы text и json", p.format)
 	}
 	if p.command == commandScan {
 		if p.file != "" {
-			return fmt.Errorf("--file работает только с командами разбора (%s, %s, %s)",
-				commandParseDocx, commandParseXlsx, commandParsePdf)
+			return fmt.Errorf("--file работает только с командами разбора (%s)", strings.Join(parseCommands, ", "))
 		}
 		if p.withText {
-			return fmt.Errorf("--with-text работает только с командами разбора (%s, %s, %s)",
-				commandParseDocx, commandParseXlsx, commandParsePdf)
+			return fmt.Errorf("--with-text работает только с командами разбора (%s)", strings.Join(parseCommands, ", "))
 		}
 		if strings.TrimSpace(p.inputDir) == "" {
 			return fmt.Errorf("не задан каталог с документами")
 		}
 		return nil
+	}
+	if p.command == commandExtractReqs && p.withText {
+		return fmt.Errorf("--with-text не используется в %s: карточка строится по извлечённому тексту, сам текст в отчёт не попадает",
+			commandExtractReqs)
 	}
 	switch {
 	case p.file != "" && strings.TrimSpace(p.inputDir) != "":
@@ -141,19 +144,32 @@ func checkFlags(p *params) error {
 	return nil
 }
 
+// isCommand — из того ли списка allCommands значение --command.
+func isCommand(command string) bool {
+	for _, known := range allCommands {
+		if known == command {
+			return true
+		}
+	}
+	return false
+}
+
 func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `Использование:
   tenderguy --input-dir <каталог> [--format text|json]
   tenderguy --command parse-docx --file <документ.docx> [--with-text] [--format text|json]
   tenderguy --command parse-xlsx --file <книга.xlsx>   [--with-text] [--format text|json]
   tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
+  tenderguy --command extract-reqs (--file <документ> | --input-dir <каталог>) [--format text|json]
 
 Флаги:
 `)
 	fs.PrintDefaults()
 	fmt.Fprint(w, `
-Коды выхода: 0 — замечаний нет, 1 — есть замечания (проблемные файлы или потери при
-извлечении), 2 — ошибка в аргументах, 3 — неверный путь (каталога нет или это не каталог).
+Коды выхода: 0 — замечаний нет (у extract-reqs сюда же попадают подозрительные
+значения: они помечены ✗ в отчёте и объявлены в stderr), 1 — есть замечания
+(проблемные файлы, потери при извлечении или неразобранные документы),
+2 — ошибка в аргументах, 3 — неверный путь (каталога нет или это не каталог).
 `)
 }
 
