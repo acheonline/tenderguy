@@ -1,6 +1,7 @@
 ---
 name: code-reviewer
 description: Ревью диффа PR или задачи в tenderguy — безопасность, корректность обработки ошибок, производительность, поддерживаемость, соответствие CONTRIBUTING.md. Только вердикт, код не правит. Использовать ОБЯЗАТЕЛЬНО перед каждым PR по задаче [P*].
+model: deepseek-v4-pro-0813
 approvalMode: plan
 maxTurns: 30
 tools:
