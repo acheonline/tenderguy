@@ -74,7 +74,7 @@ func TestRunExtractReqs(t *testing.T) {
 			name:     "подозрительное значение помечено и объявлено в stderr",
 			args:     []string{"--command", "extract-reqs", "--file", writeDocxFile(t, t.TempDir(), "заявка.docx", textParagraph("ИНН "+cliINNBad))},
 			wantExit: exitOK,
-			wantOut:  []string{"✗ ИНН(10) " + cliINNBad + " [метка: ИНН] — контрольная цифра не сходится"},
+			wantOut:  []string{"✗ ИНН(10) " + cliINNBad + " [метка: ИНН] @ стр. 1 · абз. 1 — контрольная цифра не сходится"},
 			wantErrOut: []string{
 				"подозрительных значений 1",
 			},
@@ -171,15 +171,24 @@ func TestRunExtractReqsJSONDecodes(t *testing.T) {
 
 	var rep struct {
 		Cards []struct {
+			Path    string `json:"path"`
 			Name    string `json:"name"`
 			Format  string `json:"format"`
 			Total   int    `json:"total"`
 			Suspect int    `json:"suspect"`
+			Traced  int    `json:"traced"`
 			Items   []struct {
-				Kind  string `json:"kind"`
-				Value string `json:"value"`
-				Valid bool   `json:"valid"`
-				Hits  int    `json:"hits"`
+				Kind     string `json:"kind"`
+				Value    string `json:"value"`
+				Valid    bool   `json:"valid"`
+				Hits     int    `json:"hits"`
+				RefTotal int    `json:"ref_total"`
+				Refs     []struct {
+					File   string `json:"file"`
+					Format string `json:"format"`
+					Page   int    `json:"page"`
+					Para   int    `json:"para"`
+				} `json:"refs"`
 			} `json:"items"`
 		} `json:"cards"`
 	}
@@ -195,6 +204,20 @@ func TestRunExtractReqsJSONDecodes(t *testing.T) {
 	}
 	if card.Total != len(card.Items) || card.Suspect != 0 {
 		t.Errorf("Total=%d при %d значениях, Suspect=%d", card.Total, len(card.Items), card.Suspect)
+	}
+	// P1.6: у каждого значения в json есть адрес, и поле traced сошлось с total.
+	if card.Traced != card.Total {
+		t.Errorf("Traced=%d при Total=%d", card.Traced, card.Total)
+	}
+	for _, it := range card.Items {
+		if len(it.Refs) == 0 || it.RefTotal == 0 {
+			t.Errorf("%s=%s без адреса", it.Kind, it.Value)
+			continue
+		}
+		ref := it.Refs[0]
+		if ref.File != card.Path || ref.Format != "docx" || ref.Para == 0 {
+			t.Errorf("%s=%s: адрес %+v, хотим файл docx с номером абзаца", it.Kind, it.Value, ref)
+		}
 	}
 	wantKinds := map[string]string{
 		"inn10": cliINN,
@@ -231,6 +254,11 @@ func TestRunExtractReqsMergesRepeats(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ИНН(10) "+cliINN+" ×2") {
 		t.Errorf("повтор не отмечён ×2:\n%s", out.String())
+	}
+	// P1.6: у слиянного значения видно оба адреса — первый целиком, второй
+	// счётчиком: замечание P2 должно вести в каждое место, а не в первое.
+	if !strings.Contains(out.String(), "@ стр. 1 · абз. 1 (+1)") {
+		t.Errorf("адреса повторов не сведены в строку:\n%s", out.String())
 	}
 	if n := strings.Count(out.String(), "ИНН(10) "+cliINN); n != 1 {
 		t.Errorf("значение ИНН выведено %d раз, хотим 1:\n%s", n, out.String())

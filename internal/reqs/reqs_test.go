@@ -1,8 +1,11 @@
 package reqs
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"tenderguy/internal/trace"
 )
 
 // cardFind ищет в карточке значение указанного вида; тесты сверляют найденное,
@@ -19,6 +22,36 @@ func cardFind(t *testing.T, c *Card, kind, value string) Item {
 	return Item{}
 }
 
+// frags — текст как набор абзацев с адресами. С P1.6 карточка строится по
+// фрагментам, а не по сплошному тексту, поэтому тестам извлечения нужен
+// источник, у которого адрес есть: правила показа адреса у форматов разные
+// (.docx и PDF — страница и абзац, .xlsx — лист и клетка), и helper их
+// воспроизводит.
+func frags(file, format, text string) []trace.Fragment {
+	var out []trace.Fragment
+	for i, line := range strings.Split(text, "\n") {
+		ref := trace.Ref{File: file, Format: format}
+		switch format {
+		case trace.FormatXlsx:
+			ref.Sheet = "Лист1"
+			ref.Cell = fmt.Sprintf("A%d", i+1)
+		case trace.FormatPdf:
+			ref.Page = 1
+		default:
+			ref.Page = 1
+			ref.Para = i + 1
+		}
+		out = append(out, trace.Fragment{Ref: ref, Text: line})
+	}
+	return out
+}
+
+// extract — карточка по тексту: короткая запись для тестов, которым адрес не
+// предмет проверки.
+func extract(file, format, text string) *Card {
+	return Extract(file, format, frags(file, format, text))
+}
+
 func TestExtractFindsAllKinds(t *testing.T) {
 	text := strings.Join([]string{
 		"Участник закупки: ИНН " + testINN10 + " КПП " + testKPP,
@@ -28,7 +61,7 @@ func TestExtractFindsAllKinds(t *testing.T) {
 		"Срок поставки — до 15 июня 2026",
 	}, "\n")
 
-	c := Extract("/путь/заявка.docx", "docx", text)
+	c := extract("/путь/заявка.docx", "docx", text)
 
 	if c.Path != "/путь/заявка.docx" || c.Name != "заявка.docx" || c.Format != "docx" {
 		t.Errorf("заголовок карточки: %q %q %q", c.Path, c.Name, c.Format)
@@ -60,7 +93,7 @@ func TestExtractInvalidValuesStayInCard(t *testing.T) {
 	// Значение с несходящейся контрольной цифрой или несуществующим днём —
 	// предмет сверки P2, поэтому оно должно остаться в карточке, а не молча
 	// пропасть: иначе «подозрительный реквизит» стал бы «реквизита нет».
-	c := Extract("/путь/заявка.docx", "docx", "ИНН 7714567894, дата 31.04.2026, договор от 01.01.1899")
+	c := extract("/путь/заявка.docx", "docx", "ИНН 7714567894, дата 31.04.2026, договор от 01.01.1899")
 
 	bad := cardFind(t, c, KindINN10, "7714567894")
 	if bad.Valid || bad.Reason == "" {
@@ -82,7 +115,7 @@ func TestExtractInvalidValuesStayInCard(t *testing.T) {
 func TestExtractNumberBoundaries(t *testing.T) {
 	// Число из 14 цифр не должно порождать ни ИНН(10), ни КПП(9), ни ИНН(12):
 	// \b слева и справа проверяет всю последовательность целиком.
-	c := Extract("/п/x.docx", "docx", "код 12345678901234\nИНН 12345678901234567")
+	c := extract("/п/x.docx", "docx", "код 12345678901234\nИНН 12345678901234567")
 
 	if len(c.Items) != 0 {
 		t.Errorf("из длинных последовательностей цифр что-то извлечено: %+v", c.Items)
@@ -116,7 +149,7 @@ func TestExtractMoneyFormats(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := Extract("/п/x.docx", "docx", tt.line)
+			c := extract("/п/x.docx", "docx", tt.line)
 			if tt.value == "" {
 				if len(c.Items) != 0 {
 					t.Errorf("%q: денег не ждали, получили %+v", tt.line, c.Items)
@@ -177,7 +210,7 @@ func TestExtractDateFormats(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := Extract("/п/x.docx", "docx", tt.line)
+			c := extract("/п/x.docx", "docx", tt.line)
 			it := cardFind(t, c, KindDate, tt.value)
 			if it.Raw != tt.raw {
 				t.Errorf("Raw=%q, хотим %q", it.Raw, tt.raw)
@@ -190,7 +223,7 @@ func TestExtractDateFormats(t *testing.T) {
 }
 
 func TestExtractMergesRepeatedValues(t *testing.T) {
-	c := Extract("/п/x.xlsx", "xlsx", "ИНН "+testINN10+"\nподпись: "+testINN10+"\nпечать: "+testINN10)
+	c := extract("/п/x.xlsx", "xlsx", "ИНН "+testINN10+"\nподпись: "+testINN10+"\nпечать: "+testINN10)
 
 	it := cardFind(t, c, KindINN10, testINN10)
 	if it.Hits != 3 {
@@ -199,10 +232,15 @@ func TestExtractMergesRepeatedValues(t *testing.T) {
 	if c.Total != 1 {
 		t.Errorf("Total=%d, хотим 1 (повторы сливаются)", c.Total)
 	}
+	// Слияние повторов не должно терять адреса: все три места значения —
+	// три разных адреса (P1.6).
+	if it.RefTotal != 3 || len(it.Refs) != 3 {
+		t.Errorf("адресов %d (сохранено %d), хотим 3", it.RefTotal, len(it.Refs))
+	}
 }
 
 func TestExtractItemsSortedByKindOrder(t *testing.T) {
-	c := Extract("/п/x.docx", "docx", "итого 100 руб.\nдата 01.01.2026\nИНН "+testINN10+"\nОГРН "+testOGRN)
+	c := extract("/п/x.docx", "docx", "итого 100 руб.\nдата 01.01.2026\nИНН "+testINN10+"\nОГРН "+testOGRN)
 
 	var kinds []string
 	for _, it := range c.Items {
@@ -215,7 +253,7 @@ func TestExtractItemsSortedByKindOrder(t *testing.T) {
 }
 
 func TestExtractLabels(t *testing.T) {
-	c := Extract("/п/x.docx", "docx", "ИНН 7714567894")
+	c := extract("/п/x.docx", "docx", "ИНН 7714567894")
 	if got := cardFind(t, c, KindINN10, "7714567894").Label; got != "ИНН" {
 		t.Errorf("метка %q, хотим «ИНН»", got)
 	}
@@ -223,7 +261,7 @@ func TestExtractLabels(t *testing.T) {
 	// Метка дальше 60 символов от значения уже может относиться к другой
 	// строке формы, поэтому она не должна попадать в карточку.
 	far := "ИНН " + strings.Repeat("х", 70) + " 7714567894"
-	if got := cardFind(t, Extract("/п/x.docx", "docx", far), KindINN10, "7714567894").Label; got != "" {
+	if got := cardFind(t, extract("/п/x.docx", "docx", far), KindINN10, "7714567894").Label; got != "" {
 		t.Errorf("метка %q найдена дальше контрольного расстояния", got)
 	}
 }
@@ -244,7 +282,7 @@ func TestExtractNotesOnEmptyCards(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := Extract("/п/x.pdf", "pdf", tt.text)
+			c := extract("/п/x.pdf", "pdf", tt.text)
 			joined := strings.Join(c.Notes, "\n")
 			if tt.wantNote == "" {
 				if len(c.Notes) != 0 {
@@ -283,5 +321,10 @@ func TestCardAddCountsAndSorts(t *testing.T) {
 	// Метка не перетирается пустой при слиянии повторов.
 	if got := cardFind(t, c, KindINN10, testINN10).Label; got != "" {
 		t.Errorf("метка у ИНН %q, хотим пустую", got)
+	}
+	// Значений с адресом здесь нет: TestExtractValuesCarryAddresses проверяет
+	// обратное, когда адреса есть.
+	if c.Traced != 0 {
+		t.Errorf("Traced=%d, хотим 0", c.Traced)
 	}
 }

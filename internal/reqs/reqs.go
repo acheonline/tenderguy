@@ -1,5 +1,5 @@
 // Package reqs извлекает реквизиты документов (ИНН, КПП, ОГРН, даты,
-// суммы) из текста, полученного парсерами P1.2–P1.4, и формирует карточку
+// суммы) из фрагментов, полученных парсерами P1.2–P1.4, и формирует карточку
 // файла — вход для детерминированных сверок эпика P2.
 //
 // Задача P1.5: поиск регулярными выражениями с валидацией найденного —
@@ -8,9 +8,12 @@
 // (Valid=false с причиной): расходящиеся реквизиты и есть предмет проверки
 // пакета.
 //
-// Позиции фрагментов (файл+страница+ячейка) здесь не сохраняются —
-// адресация фрагментов принадлежит задаче P1.6; метка (Label) — ближайшее
-// ключевое слово перед значением — ранняя версия той же трассировки.
+// Позиции фрагментов карточка носит с собой (задача P1.6): каждый Item знает
+// адрес, где значение найдено — «файл + страница/абзац» для .docx, «лист +
+// ячейка» для .xlsx, «страница» для PDF. Без этого замечание P2 нельзя
+// показать человеку: он должен открыть место, а не искать его глазами.
+// Метка (Label) — ближайшее ключевое слово перед значением — осталась как
+// подсказка «это ИНН» или «это НМЦК», адрес на неё не опирается.
 package reqs
 
 import (
@@ -22,6 +25,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"tenderguy/internal/trace"
 )
 
 // Виды реквизитов в карточке.
@@ -34,6 +39,11 @@ const (
 	KindDate   = "date"   // дата
 	KindMoney  = "money"  // сумма с валютным маркером
 )
+
+// maxItemRefs — сколько адресов значения храним целиком: больше десяти
+// означает «значение набрано по всему документу», и полный список только
+// раздувает отчёт. RefTotal при этом считает все различные адреса.
+const maxItemRefs = 10
 
 // Item — одно значение реквизита в карточке. Одинаковые (вид + нормализованное
 // значение) сливаются, Hits считает повторения в документе.
@@ -49,6 +59,29 @@ type Item struct {
 	Label string `json:"label,omitempty"`
 	// Hits — сколько раз значение встретилось в документе.
 	Hits int `json:"hits"`
+	// Refs — адреса в источнике, где значение найдено (P1.6). У слиянного
+	// значения их несколько: одно и то же «1234567890» может стоять в шапке,
+	// в таблице и в подписи, и замечание обязано показывать все места.
+	Refs []trace.Ref `json:"refs,omitempty"`
+	// RefTotal — различных адресов всего; больше len(Refs) значит, что список
+	// обрезан до maxItemRefs.
+	RefTotal int `json:"ref_total,omitempty"`
+}
+
+// addRef запоминает адрес значения, не повторяя уже известный.
+func (i *Item) addRef(r trace.Ref) {
+	if !r.Traced() {
+		return
+	}
+	for _, have := range i.Refs {
+		if have == r {
+			return
+		}
+	}
+	i.RefTotal++
+	if len(i.Refs) < maxItemRefs {
+		i.Refs = append(i.Refs, r)
+	}
 }
 
 // Card — карточка реквизитов одного файла.
@@ -63,6 +96,9 @@ type Card struct {
 	Total int `json:"total"`
 	// Suspect — значений, не прошедших проверку: их видно сразу.
 	Suspect int `json:"suspect"`
+	// Traced — значений, у которых есть адрес в источнике. Критерий P1.6 —
+	// Traced == Total; отставание ищет дыру не в документе, а в парсере.
+	Traced int `json:"traced"`
 
 	Notes []string `json:"notes,omitempty"`
 }
@@ -90,6 +126,11 @@ func (c *Card) add(item Item) {
 			if c.Items[i].Label == "" {
 				c.Items[i].Label = item.Label
 			}
+			// Адреса повтора объединяются: значение могло стоять в трёх местах,
+			// и замечание P2 должно вести во все, а не в первое.
+			for _, r := range item.Refs {
+				c.Items[i].addRef(r)
+			}
 			return
 		}
 	}
@@ -106,9 +147,13 @@ func (c *Card) finalize() {
 	})
 	c.Total = len(c.Items)
 	c.Suspect = 0
+	c.Traced = 0
 	for _, it := range c.Items {
 		if !it.Valid {
 			c.Suspect++
+		}
+		if len(it.Refs) > 0 {
+			c.Traced++
 		}
 	}
 }
@@ -122,21 +167,27 @@ var labelWords = []string{
 	"валюта", "дата", "выдан", "зарегистрирован", "действителен",
 }
 
-// Extract строит карточку реквизитов по тексту документа: три вида числовых
-// идентификаторов, даты (цифровые и с названием месяца) и суммы с валютным
-// маркером. Формат передаётся вызывающим (docx/xlsx/pdf) — для карточки он
-// способ извлечения, а не предмет проверки.
-func Extract(path, format, text string) *Card {
+// Extract строит карточку реквизитов по фрагментам содержимого: три вида
+// числовых идентификаторов, даты (цифровые и с названием месяца) и суммы с
+// валютным маркером. Фрагменты отдаёт парсер формата (docx/xlsx/pdf — P1.2…P1.4)
+// вместе с адресом, поэтому найденное значение хранит, где именно оно стоит:
+// строка в .docx, клетка листа в .xlsx, страница в PDF (P1.6).
+func Extract(path, format string, frags []trace.Fragment) *Card {
 	c := &Card{Path: path, Name: filepath.Base(path), Format: format}
 	nonEmptyLines := 0
-	for _, line := range strings.Split(text, "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+	for _, frag := range frags {
+		// Смещение строки внутри фрагмента нужно, чтобы доехать до клетки:
+		// адрес «строка таблицы» уточняется сегментами фрагмента.
+		pos := 0
+		for _, line := range strings.Split(frag.Text, "\n") {
+			if strings.TrimSpace(line) != "" {
+				nonEmptyLines++
+				c.scanNumbers(frag, pos, line)
+				c.scanDates(frag, pos, line)
+				c.scanMoney(frag, pos, line)
+			}
+			pos += len(line) + 1
 		}
-		nonEmptyLines++
-		c.scanNumbers(line)
-		c.scanDates(line)
-		c.scanMoney(line)
 	}
 	c.finalize()
 	c.addNotes(nonEmptyLines)
@@ -167,14 +218,25 @@ func (c *Card) hasAnyKind(kinds ...string) bool {
 	return false
 }
 
+// located дописывает значению адрес, по которому оно найдено. Фрагмент без
+// адреса значение не помечает: оно остаётся в карточке, но не попадает в
+// трассированные, и статистика карточки честно покажет дыру в парсере.
+func located(frag trace.Fragment, pos, off int, it Item) Item {
+	it.addRef(frag.RefAt(pos + off))
+	return it
+}
+
 // scanNumbers ищет ИНН/КПП/ОГРН: последовательности из 9, 10, 12, 13 и 15
 // цифр, окружённые не-цифрами (границы \b в Go RE2 достаточно).
-func (c *Card) scanNumbers(line string) {
+func (c *Card) scanNumbers(frag trace.Fragment, pos int, line string) {
 	find := func(re *regexp.Regexp, kind string, validate func(string) (bool, string)) {
 		for _, m := range re.FindAllStringIndex(line, -1) {
 			raw := line[m[0]:m[1]]
 			ok, reason := validate(raw)
-			c.add(Item{Kind: kind, Value: raw, Raw: raw, Valid: ok, Reason: reason, Label: labelBefore(line, m[0])})
+			c.add(located(frag, pos, m[0], Item{
+				Kind: kind, Value: raw, Raw: raw, Valid: ok, Reason: reason,
+				Label: labelBefore(line, m[0]),
+			}))
 		}
 	}
 	find(reOgrnip, KindOGRNIP, validateOGRN15)
@@ -203,24 +265,34 @@ var monthByName = map[string]int{
 	"июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
 }
 
-func (c *Card) scanDates(line string) {
+func (c *Card) scanDates(frag trace.Fragment, pos int, line string) {
 	for _, m := range reDate.FindAllStringSubmatchIndex(line, -1) {
-		raw := line[m[0]:m[1]]
 		day := atoi(line[m[2]:m[3]])
 		month := atoi(line[m[4]:m[5]])
 		year := atoi(line[m[6]:m[7]])
-		value := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
 		ok, reason := validateDate(year, month, day)
-		c.add(Item{Kind: KindDate, Value: value, Raw: raw, Valid: ok, Reason: reason, Label: labelBefore(line, m[0])})
+		c.add(located(frag, pos, m[0], Item{
+			Kind:   KindDate,
+			Value:  fmt.Sprintf("%04d-%02d-%02d", year, month, day),
+			Raw:    line[m[0]:m[1]],
+			Valid:  ok,
+			Reason: reason,
+			Label:  labelBefore(line, m[0]),
+		}))
 	}
 	for _, m := range reDateRU.FindAllStringSubmatchIndex(line, -1) {
-		raw := line[m[0]:m[1]]
 		day := atoi(line[m[2]:m[3]])
 		month := monthByName[strings.ToLower(line[m[4]:m[5]])]
 		year := atoi(line[m[6]:m[7]])
-		value := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
 		ok, reason := validateDate(year, month, day)
-		c.add(Item{Kind: KindDate, Value: value, Raw: raw, Valid: ok, Reason: reason, Label: labelBefore(line, m[0])})
+		c.add(located(frag, pos, m[0], Item{
+			Kind:   KindDate,
+			Value:  fmt.Sprintf("%04d-%02d-%02d", year, month, day),
+			Raw:    line[m[0]:m[1]],
+			Valid:  ok,
+			Reason: reason,
+			Label:  labelBefore(line, m[0]),
+		}))
 	}
 }
 
@@ -234,14 +306,14 @@ func (c *Card) scanDates(line string) {
 //	1 000 000,50  — русская запись (разряды через пробел, копейки через запятую);
 //	5000000       — число без разделителей.
 //
-// Разряды разделяются обычным пробелом, NBSP (U+00A0) или узким NBSP
+// Разряды разделяются обычным пробелом, NBSP (U+00A0) или узкий NBSP
 // (U+202F); RE2 не знает побегов «\u», поэтому они заданы как «\x{…}». Между
 // группами разрядов ровно один разделитель и ровно три цифры, поэтому
 // прокладка из нескольких пробелов между ячейками таблицы в число не входит:
 // «1.00    438,819.67» даёт одно значение, а не склеенное.
 var reMoney = regexp.MustCompile(`(?i)\b(\d{1,3}(?:[,.]\d{3})+(?:[,.]\d{1,2})?|\d{1,3}(?:[\x{00A0}\x{202F} ]\d{3})*(?:[,.]\d{1,2})?|\d+(?:[,.]\d{1,2})?)[\x{00A0}\x{202F} ]{0,3}(рублей|руб\.?|RUB|₽|USD|\$|EUR|€|долларов(?:а)?)`)
 
-func (c *Card) scanMoney(line string) {
+func (c *Card) scanMoney(frag trace.Fragment, pos int, line string) {
 	for _, m := range reMoney.FindAllStringSubmatchIndex(line, -1) {
 		// Число сразу после запятой или точки — хвост другого числа, а не сумма:
 		// в «1,2345 руб.» иначе родился бы результат 2345 руб.
@@ -261,13 +333,13 @@ func (c *Card) scanMoney(line string) {
 		if !ok {
 			continue
 		}
-		c.add(Item{
+		c.add(located(frag, pos, m[0], Item{
 			Kind:  KindMoney,
 			Value: value + " " + normalizeCurrency(mark),
 			Raw:   strings.TrimSpace(line[m[0]:m[1]]),
 			Valid: true,
 			Label: labelBefore(line, m[0]),
-		})
+		}))
 	}
 }
 
