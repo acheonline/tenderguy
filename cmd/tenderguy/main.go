@@ -6,8 +6,11 @@
 // что извлечение прошло без потерь. Задача P1.3: командой --command
 // parse-xlsx прочитали ячейки и формулы книг Excel (.xlsx), сверив их с
 // XML-эталоном книги. Задача P1.5: командой --command extract-reqs поверх
-// парсеров форматов собрать карточку реквизитов файла. Пути в коде не
-// фиксируются — каталог задаётся только флагом --input-dir.
+// парсеров форматов собрать карточку реквизитов файла. Задача P1.6: командой
+// --command trace разложить документы на фрагменты и проверить, что у каждого
+// из них и у каждого реквизита есть адрес в источнике — файл плюс страница
+// или пункт. Пути в коде не фиксируются — каталог задаётся только флагом
+// --input-dir.
 package main
 
 import (
@@ -47,11 +50,11 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR) или extract-reqs (карточка реквизитов)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов) или trace (адреса фрагментов и трассируемость)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
-	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст документов целиком (parse-docx, parse-xlsx, parse-pdf)")
+	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст целиком (parse-docx, parse-xlsx, parse-pdf) или список фрагментов с адресами (trace)")
 	return fs, p
 }
 
@@ -86,6 +89,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if p.command == commandExtractReqs {
 		return extractReqs(p, stdout, stderr)
+	}
+	if p.command == commandTrace {
+		return traceCmd(p, stdout, stderr)
 	}
 
 	res, err := scanner.Scan(p.inputDir)
@@ -161,6 +167,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command parse-xlsx --file <книга.xlsx>   [--with-text] [--format text|json]
   tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
   tenderguy --command extract-reqs (--file <документ> | --input-dir <каталог>) [--format text|json]
+  tenderguy --command trace (--file <документ> | --input-dir <каталог>) [--with-text] [--format text|json]
 
 Флаги:
 `)
@@ -168,8 +175,9 @@ func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `
 Коды выхода: 0 — замечаний нет (у extract-reqs сюда же попадают подозрительные
 значения: они помечены ✗ в отчёте и объявлены в stderr), 1 — есть замечания
-(проблемные файлы, потери при извлечении или неразобранные документы),
-2 — ошибка в аргументах, 3 — неверный путь (каталога нет или это не каталог).
+(проблемные файлы, потери при извлечении, неразобранные документы или фрагменты
+и значения без адреса в источнике — команда trace), 2 — ошибка в аргументах,
+3 — неверный путь (каталога нет или это не каталог).
 `)
 }
 
