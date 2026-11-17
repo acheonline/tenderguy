@@ -1,0 +1,59 @@
+{
+  "agents": {
+    "defaultBackground": false
+  },
+  "permissions": {
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push origin main*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git checkout -- .*)",
+      "Bash(git commit --no-verify*)",
+      "Bash(rm -rf *)",
+      "Read(.env)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "run_shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$QWEN_PROJECT_DIR/.qwen/hooks/pretool_guard.py\"",
+            "name": "tenderguy-guard",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "edit|write_file",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$QWEN_PROJECT_DIR/.qwen/hooks/posttool_go.py\"",
+            "name": "tenderguy-gofmt",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "go-dev|testing-expert",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$QWEN_PROJECT_DIR/.qwen/hooks/subagentstop_evidence.py\"",
+            "name": "tenderguy-evidence",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

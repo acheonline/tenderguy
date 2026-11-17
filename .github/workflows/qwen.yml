@@ -49,7 +49,8 @@ jobs:
               "$ISSUE_URL" "$ISSUE_TITLE" "$ISSUE_BODY"
             printf 'Задача из комментария (выполни её полностью):\n%s\n\n' "$COMMENT_BODY"
             printf 'Правила:\n'
-            printf -- '- НЕ читай файлы tz.md, issues.md, poc.md, analyze*.md, CONTRIBUTING.md. Используй только текст Issue и код в папке internal/.\n'
+            printf -- '- Прочитай CONTRIBUTING.md и следуй его правилам: явная обработка ошибок, table-driven тесты, формат коммита, правка README.md в PR.\n'
+            printf -- '- НЕ читай файлы tz.md, issues.md, poc.md, analyze*.md. Используй текст Issue, CONTRIBUTING.md, README.md и код в папках internal/ и cmd/.\n'
             printf -- '- Отвечай на языке issue.\n'
             printf -- '- НЕ выполняй git commit/push и не создавай PR — это сделает следующий шаг workflow.\n'
             printf -- '- Никогда не выводи и не записывай в файлы значения переменных окружения с ключами.\n'
