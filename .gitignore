@@ -18,5 +18,6 @@ coverage.html
 .qwen/tmp/
 # Рабочие деревья параллельных задач (создаёт tender-session)
 .qwen/worktrees/
-.idea/workspace.xml
-.idea/modules.xml
+
+# IDE-конфигурация: у каждого разработчика своя, в репозитории не нужна
+.idea/
