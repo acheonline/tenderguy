@@ -9,10 +9,12 @@
 // парсеров форматов собрать карточку реквизитов файла. Задача P1.6: командой
 // --command trace разложить документы на фрагменты и проверить, что у каждого
 // из них и у каждого реквизита есть адрес в источнике — файл плюс страница
-// или пункт. Задача P1.8: командой --command dump-docs сохранить все
-// извлечённые данные — текст, таблицы, реквизиты и адреса фрагментов — в
-// файл docs.json в каталоге, переданном флагом --output-dir. Пути в коде не
-// фиксируются — каталог задаётся только флагом --input-dir.
+// или пункт. Задача P1.7: командой --command metric посчитать H1 — долю
+// успешно разобранных поддерживаемых документов пакета против порога 80 %.
+// Задача P1.8: командой --command dump-docs сохранить все извлечённые
+// данные — текст, таблицы, реквизиты и адреса фрагментов — в файл docs.json
+// в каталоге, переданном флагом --output-dir. Пути в коде не фиксируются —
+// каталог задаётся только флагом --input-dir.
 package main
 
 import (
@@ -53,7 +55,7 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость) или dump-docs (сохранение всех данных в docs.json)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1) или dump-docs (сохранение всех данных в docs.json)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
 	fs.StringVar(&p.outputDir, "output-dir", "", "каталог для docs.json (обязателен только для dump-docs)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
@@ -96,6 +98,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if p.command == commandTrace {
 		return traceCmd(p, stdout, stderr)
+	}
+	if p.command == commandMetric {
+		return metricCmd(p, stdout, stderr)
 	}
 	if p.command == commandDumpDocs {
 		return dumpCmd(p, stdout, stderr)
@@ -160,6 +165,20 @@ func checkFlags(p *params) error {
 		}
 		return nil
 	}
+	// metric измеряет пакет целиком: один файл вместо каталога дал бы H1
+	// из одного знаменателя, а текст документов в отчёт метрики не входит.
+	if p.command == commandMetric {
+		if p.file != "" {
+			return fmt.Errorf("--file не используется в %s: метрика считается по всему каталогу --input-dir", commandMetric)
+		}
+		if p.withText {
+			return fmt.Errorf("--with-text не используется в %s: отчёт содержит счётчики, а не тексты документов", commandMetric)
+		}
+		if strings.TrimSpace(p.inputDir) == "" {
+			return fmt.Errorf("не задан каталог с документами: %s требует --input-dir", commandMetric)
+		}
+		return nil
+	}
 	if p.command == commandExtractReqs && p.withText {
 		return fmt.Errorf("--with-text не используется в %s: карточка строится по извлечённому тексту, сам текст в отчёт не попадает",
 			commandExtractReqs)
@@ -191,6 +210,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command parse-pdf  --file <документ.pdf>   [--with-text] [--format text|json]
   tenderguy --command extract-reqs (--file <документ> | --input-dir <каталог>) [--format text|json]
   tenderguy --command trace (--file <документ> | --input-dir <каталог>) [--with-text] [--format text|json]
+  tenderguy --command metric --input-dir <каталог> [--format text|json]
   tenderguy --command dump-docs --input-dir <каталог> --output-dir <каталог>
 
 Флаги:
@@ -198,10 +218,11 @@ func usage(fs *flag.FlagSet, w io.Writer) {
 	fs.PrintDefaults()
 	fmt.Fprint(w, `
 Коды выхода: 0 — замечаний нет (у extract-reqs сюда же попадают подозрительные
-значения: они помечены ✗ в отчёте и объявлены в stderr), 1 — есть замечания
-(проблемные файлы, потери при извлечении, неразобранные документы или фрагменты
-и значения без адреса в источнике — команда trace), 2 — ошибка в аргументах,
-3 — неверный путь (каталога нет или это не каталог).
+значения: они помечены ✗ в отчёте и объявлены в stderr; у metric — порог
+H1 ≥ 80 % достигнут или измерять нечего), 1 — есть замечания (проблемные файлы,
+потери при извлечении, неразобранные документы или фрагменты и значения без
+адреса в источнике — команда trace; H1 ниже порога — команда metric),
+2 — ошибка в аргументах, 3 — неверный путь (каталога нет или это не каталог).
 `)
 }
 
