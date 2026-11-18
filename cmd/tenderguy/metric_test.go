@@ -160,6 +160,58 @@ func TestRunMetric(t *testing.T) {
 			wantOut:  []string{"нечего измерять"},
 		},
 		{
+			name:     "пустой каталог в json — нулевые счётчики, note и пустой список форматов",
+			prepare:  func(t *testing.T) string { return t.TempDir() },
+			extra:    []string{"--format", "json"},
+			wantExit: exitOK,
+			// `"formats": []` проверяется по сырому выводу: null при
+			// unmarshal тоже дал бы пустой срез, а списки в отчёте
+			// присутствуют всегда (стиль dump.go).
+			wantOut: []string{`"formats": []`, `"note": "нечего измерять"`},
+			verifyJSON: func(t *testing.T, rep metricReport) {
+				if rep.Supported != 0 || rep.Parsed != 0 || rep.Total != 0 || rep.Other != 0 {
+					t.Errorf("счётчики: %+v, хотели нули", rep)
+				}
+				if rep.Success != 0 || rep.Threshold != 80 || !rep.Reached {
+					t.Errorf("H1/порог: %+v, хотели 0/80/true", rep)
+				}
+				if rep.Note != "нечего измерять" {
+					t.Errorf("note = %q, хотели «нечего измерять»", rep.Note)
+				}
+				if len(rep.Formats) != 0 {
+					t.Errorf("formats = %+v, хотели пустой список", rep.Formats)
+				}
+				if len(rep.Failed) != 0 {
+					t.Errorf("failed = %+v, хотели отсутствие", rep.Failed)
+				}
+			},
+		},
+		{
+			name: "только неподдерживаемые файлы в json — total/other реальные, supported 0",
+			prepare: func(t *testing.T) string {
+				dir := t.TempDir()
+				writeFixture(t, filepath.Join(dir, "инструкция.txt"), []byte("читать"))
+				writeFixture(t, filepath.Join(dir, "условия.md"), []byte("# условия"))
+				return dir
+			},
+			extra:    []string{"--format", "json"},
+			wantExit: exitOK,
+			verifyJSON: func(t *testing.T, rep metricReport) {
+				if rep.Total != 2 || rep.Other != 2 {
+					t.Errorf("total = %d, other = %d, хотели 2 и 2", rep.Total, rep.Other)
+				}
+				if rep.Supported != 0 || rep.Parsed != 0 || rep.Success != 0 || !rep.Reached {
+					t.Errorf("отчёт: %+v, хотели supported/parsed/success 0 и reached true", rep)
+				}
+				if rep.Note != "нечего измерять" {
+					t.Errorf("note = %q, хотели «нечего измерять»", rep.Note)
+				}
+				if len(rep.Formats) != 0 {
+					t.Errorf("formats = %+v, хотели пустой список", rep.Formats)
+				}
+			},
+		},
+		{
 			name:       "каталога нет — код 3",
 			prepare:    func(t *testing.T) string { return filepath.Join(t.TempDir(), "нет-такого-каталога") },
 			wantExit:   exitBadPath,
@@ -355,6 +407,50 @@ func TestCollectMetricProblemEntry(t *testing.T) {
 		if f != want[i] {
 			t.Errorf("формат[%d] = %+v, хотели %+v (порядок docx→xlsx→pdf)", i, f, want[i])
 		}
+	}
+}
+
+// Защита от nil-записи формата в collectMetric: scanner.Supported() сегодня
+// признаёт только docx/xlsx/pdf, но если сканер начнёт поддерживать новый
+// формат, метрика обязана не паниковать, а учесть запись как неудачу без
+// попытки разбора — доля при этом остаётся консервативной (запись в
+// знаменателе). Kind берётся настоящий, но вне трёх разбираемых.
+func TestCollectMetricUnknownKind(t *testing.T) {
+	dir := t.TempDir()
+	good := writeDocxFile(t, dir, "хороший.docx", textParagraph("текст"))
+	archive := filepath.Join(dir, "приложение.zip")
+	writeFixture(t, archive, []byte("PK\x03\x04"))
+
+	res := &scanner.Result{
+		Root:  dir,
+		Total: 2,
+		Entries: []scanner.Entry{
+			{RelPath: "хороший.docx", Path: good, Name: "хороший.docx", Kind: scanner.KindDocx, Supported: true},
+			{RelPath: "приложение.zip", Path: archive, Name: "приложение.zip", Kind: scanner.KindArchive, Supported: true},
+		},
+	}
+
+	rep, stats := collectMetric(res)
+	if rep.Total != 2 || rep.Supported != 2 || rep.Parsed != 1 {
+		t.Errorf("счётчики: total=%d supported=%d parsed=%d, хотели 2/2/1 (доля консервативна)",
+			rep.Total, rep.Supported, rep.Parsed)
+	}
+	if len(rep.Failed) != 1 {
+		t.Fatalf("failed = %+v, хотели одну запись", rep.Failed)
+	}
+	if rep.Failed[0].Path != archive {
+		t.Errorf("failed[0].Path = %q, хотели %q", rep.Failed[0].Path, archive)
+	}
+	if want := `неизвестный формат "archive"`; rep.Failed[0].Error != want {
+		t.Errorf("failed[0].Error = %q, хотели %q", rep.Failed[0].Error, want)
+	}
+	formats := formatStats(stats)
+	want := []metricFormat{{Format: "docx", Total: 1, Parsed: 1, Success: 100, Lost: 0, LossesMeasured: true}}
+	if len(formats) != len(want) {
+		t.Fatalf("formats = %+v, хотели %+v", formats, want)
+	}
+	if formats[0] != want[0] {
+		t.Errorf("formats[0] = %+v, хотели %+v", formats[0], want[0])
 	}
 }
 
