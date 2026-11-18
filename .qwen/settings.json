@@ -23,6 +23,7 @@
       }
     },
     "deny": [
+      "mcp__github",
       "Bash(gh pr merge*)",
       "Bash(gh api repos/*pulls/*/merge*)",
       "Bash(git push --force*)",
