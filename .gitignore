@@ -16,5 +16,7 @@ coverage.html
 
 # Локальные черновики инструментов
 .qwen/tmp/
+# Рабочие деревья параллельных задач (создаёт tender-session)
+.qwen/worktrees/
 .idea/workspace.xml
 .idea/modules.xml
