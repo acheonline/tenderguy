@@ -16,5 +16,6 @@ coverage.html
 
 # Локальные черновики инструментов
 .qwen/tmp/
-.idea/workspace.xml
-.idea/modules.xml
+
+# IDE-конфигурация: у каждого разработчика своя, в репозитории не нужна
+.idea/
