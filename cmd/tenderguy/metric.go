@@ -15,6 +15,11 @@ import (
 // для проверок после парсинга, обязана быть не ниже 80 %. Ниже — код выхода 1.
 const metricThreshold = 80.0
 
+// metricEmptyNote — пометка отчёта для пакета без поддерживаемых документов:
+// метрика H1 на нём не определена. В json попадает полем note, в text —
+// в строку сообщения, чтобы человек и вызывающий код видели одну причину.
+const metricEmptyNote = "нечего измерять"
+
 // metricFormat — результат H1 по одному формату.
 type metricFormat struct {
 	Format  string  `json:"format"`
@@ -48,6 +53,11 @@ type metricReport struct {
 	PdfLossesMeasured bool           `json:"pdf_losses_measured"`
 	Formats           []metricFormat `json:"formats"`
 	Failed            []failedDoc    `json:"failed,omitempty"`
+
+	// Note — пояснение к отчёту, когда метрика не определена (в пакете нет
+	// поддерживаемых документов). Во всех остальных случаях поле пусто и
+	// в json не попадает.
+	Note string `json:"note,omitempty"`
 }
 
 // metricCmd считает метрику H1 (P1.7): обходит каталог --input-dir, разбирает
@@ -66,16 +76,21 @@ func metricCmd(p *params, stdout, stderr io.Writer) int {
 
 	rep, stats := collectMetric(res)
 	if rep.Supported == 0 {
-		// Пустой пакет — не провал метрики: измерять нечего, порог не нарушен.
-		fmt.Fprintf(stdout, "Каталог: %s\nВ нём нет документов .docx/.xlsx/.pdf — нечего измерять.\n", rep.InputDir)
-		return exitOK
+		// Пустой пакет — не провал метрики: измерять нечего, порог не нарушен,
+		// поэтому код выхода 0 и threshold_reached=true — поле обязано быть
+		// согласованным с кодом выхода, иначе вызывающий код увидел бы
+		// противоречие. Причина нулей объясняется полем note.
+		rep.Note = metricEmptyNote
+		rep.Reached = true
+	} else {
+		success := shareOf(rep.Parsed, rep.Supported)
+		rep.Success = round1(success)
+		// Порог сравнивается с неокруглённым значением: 79.96 % округлились бы
+		// к «80.0» и ложно прошли критерий.
+		rep.Reached = success >= metricThreshold
 	}
-
-	success := shareOf(rep.Parsed, rep.Supported)
-	rep.Success = round1(success)
-	// Порог сравнивается с неокруглённым значением: 79.96 % округлились бы
-	// к «80.0» и ложно прошли критерий.
-	rep.Reached = success >= metricThreshold
+	// Для пустого пакета formatStats возвращает пустой срез, а не nil: списки
+	// в отчёте присутствуют всегда (стиль dump-docs).
 	rep.Formats = formatStats(stats)
 
 	if p.format == "json" {
@@ -83,6 +98,8 @@ func metricCmd(p *params, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "tenderguy: не удалось вывести отчёт: %v\n", err)
 			return exitProblems
 		}
+	} else if rep.Supported == 0 {
+		fmt.Fprintf(stdout, "Каталог: %s\nВ нём нет документов .docx/.xlsx/.pdf — %s.\n", rep.InputDir, metricEmptyNote)
 	} else {
 		writeMetricText(stdout, rep)
 	}
@@ -118,6 +135,18 @@ func collectMetric(res *scanner.Result) (*metricReport, map[scanner.Kind]*metric
 		}
 		rep.Supported++
 		st := stats[e.Kind]
+		if st == nil {
+			// Защита от будущего расширения сканера: сегодня Supported=true
+			// бывает только у docx/xlsx/pdf, но метрика не должна паниковать,
+			// если сканер начнёт признавать новые форматы. Запись остаётся
+			// в знаменателе (rep.Supported уже увеличен) и учитывается как
+			// неудача без попытки разбора — доля считается консервативно.
+			rep.Failed = append(rep.Failed, failedDoc{
+				Path:  e.Path,
+				Error: fmt.Sprintf("неизвестный формат %q", e.Kind),
+			})
+			continue
+		}
 		st.Total++
 		// Файл с problem обхода (содержимое не читается) — неудача без попытки
 		// разбора: причина уже известна сканеру.
