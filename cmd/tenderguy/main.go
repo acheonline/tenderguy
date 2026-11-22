@@ -13,8 +13,11 @@
 // успешно разобранных поддерживаемых документов пакета против порога 80 %.
 // Задача P1.8: командой --command dump-docs сохранить все извлечённые
 // данные — текст, таблицы, реквизиты и адреса фрагментов — в файл docs.json
-// в каталоге, переданном флагом --output-dir. Пути в коде не фиксируются —
-// каталог задаётся только флагом --input-dir.
+// в каталоге, переданном флагом --output-dir. Задача P2.1: командой
+// --command check применить к пакету детерминированные правила из
+// JSON-конфига, переданного флагом --rules, и показать замечания с адресами
+// фрагментов-источников. Пути в коде не фиксируются — каталог задаётся
+// только флагом --input-dir.
 package main
 
 import (
@@ -44,6 +47,7 @@ func main() {
 type params struct {
 	inputDir  string
 	outputDir string
+	rulesFile string
 	file      string
 	command   string
 	format    string
@@ -55,9 +59,10 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1) или dump-docs (сохранение всех данных в docs.json)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1), dump-docs (сохранение всех данных в docs.json) или check (прогон правил по пакету)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
 	fs.StringVar(&p.outputDir, "output-dir", "", "каталог для docs.json (обязателен только для dump-docs)")
+	fs.StringVar(&p.rulesFile, "rules", "", "файл правил в формате JSON (обязателен только для check)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
 	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст целиком (parse-docx, parse-xlsx, parse-pdf) или список фрагментов с адресами (trace)")
@@ -104,6 +109,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if p.command == commandDumpDocs {
 		return dumpCmd(p, stdout, stderr)
+	}
+	if p.command == commandCheck {
+		return checkCmd(p, stdout, stderr)
 	}
 
 	res, err := scanner.Scan(p.inputDir)
@@ -152,6 +160,30 @@ func checkFlags(p *params) error {
 		}
 	} else if strings.TrimSpace(p.outputDir) != "" {
 		return fmt.Errorf("--output-dir используется только командой %s", commandDumpDocs)
+	}
+	// --rules принадлежит только check: у остальных команд файл правил
+	// означал бы молчаливо проигнорированный флаг.
+	if p.command != commandCheck && strings.TrimSpace(p.rulesFile) != "" {
+		return fmt.Errorf("--rules используется только командой %s", commandCheck)
+	}
+	// check применяет правила ко всему пакету, как metric и dump-docs:
+	// замечанию нужен адрес фрагмента-источника и состав пакета, а один файл
+	// вместо каталога не даёт ни того, ни другого. Тексты документов в отчёт
+	// не попадают — вместо них адреса.
+	if p.command == commandCheck {
+		if p.file != "" {
+			return fmt.Errorf("--file не используется в %s: правила применяются ко всему каталогу --input-dir", commandCheck)
+		}
+		if p.withText {
+			return fmt.Errorf("--with-text не используется в %s: отчёт содержит замечания с адресами, а не тексты документов", commandCheck)
+		}
+		if strings.TrimSpace(p.inputDir) == "" {
+			return fmt.Errorf("не задан каталог с документами: %s требует --input-dir", commandCheck)
+		}
+		if strings.TrimSpace(p.rulesFile) == "" {
+			return fmt.Errorf("не задан файл правил: %s требует --rules", commandCheck)
+		}
+		return nil
 	}
 	if p.command == commandScan {
 		if p.file != "" {
@@ -212,6 +244,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command trace (--file <документ> | --input-dir <каталог>) [--with-text] [--format text|json]
   tenderguy --command metric --input-dir <каталог> [--format text|json]
   tenderguy --command dump-docs --input-dir <каталог> --output-dir <каталог>
+  tenderguy --command check --input-dir <каталог> --rules <конфиг.json> [--format text|json]
 
 Флаги:
 `)
@@ -219,10 +252,14 @@ func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `
 Коды выхода: 0 — замечаний нет (у extract-reqs сюда же попадают подозрительные
 значения: они помечены ✗ в отчёте и объявлены в stderr; у metric — порог
-H1 ≥ 80 % достигнут или измерять нечего), 1 — есть замечания (проблемные файлы,
+H1 ≥ 80 % достигнут или измерять нечего; у check — блокирующих замечаний нет,
+в том числе когда в конфиге нет правил), 1 — есть замечания (проблемные файлы,
 потери при извлечении, неразобранные документы или фрагменты и значения без
-адреса в источнике — команда trace; H1 ниже порога — команда metric),
-2 — ошибка в аргументах, 3 — неверный путь (каталога нет или это не каталог).
+адреса в источнике — команда trace; H1 ниже порога — команда metric;
+блокирующие замечания, неразобранные документы или внутренняя ошибка движка —
+команда check), 2 — ошибка в аргументах или в содержимом файла правил
+(команда check), 3 — неверный путь (каталога нет или это не каталог; у check
+сюда же попадает недоступный файл --rules).
 `)
 }
 
