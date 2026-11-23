@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"tenderguy/internal/reqs"
 	"tenderguy/internal/trace"
 )
 
@@ -251,6 +252,139 @@ func TestLoadConfig(t *testing.T) {
 				}
 				if !errors.Is(err, os.ErrNotExist) {
 					t.Errorf("ошибка чтения должна нести os.ErrNotExist: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadConfigComposition(t *testing.T) {
+	// Раздел composition (P2.4): пункты требуемого состава, их способы
+	// сопоставления и ошибки, которые обязан ловить LoadConfig (код выхода 2).
+	tests := []struct {
+		name    string
+		content string
+		want    Config
+		wantErr []string
+	}{
+		{
+			name: "валидные пункты всех трёх способов сопоставления",
+			content: `{"version": 1, "composition": [
+				{"id": "form-2", "title": "Заявка по форме 2", "required": true,
+				 "match": {"by": "filename", "pattern": "заявка*.docx"}},
+				{"id": "price", "title": "Спецификация цены", "required": false,
+				 "match": {"by": "kind", "kind": "xlsx"}},
+				{"id": "card", "title": "Карточка с реквизитами", "required": true,
+				 "match": {"by": "requisite", "kind": "inn10"}}
+			]}`,
+			want: Config{
+				Version: SupportedVersion,
+				Composition: []CompositionItem{
+					{ID: "form-2", Title: "Заявка по форме 2", Required: true,
+						Match: CompositionMatch{By: matchByFilename, Pattern: "заявка*.docx"}},
+					{ID: "price", Title: "Спецификация цены",
+						Match: CompositionMatch{By: matchByKind, Kind: "xlsx"}},
+					{ID: "card", Title: "Карточка с реквизитами", Required: true,
+						Match: CompositionMatch{By: matchByRequisite, Kind: reqs.KindINN10}},
+				},
+			},
+		},
+		{
+			name:    "пункт без id",
+			content: `{"version": 1, "composition": [{"title": "Заявка", "match": {"by": "kind", "kind": "docx"}}]}`,
+			wantErr: []string{"пункт состава #1", "id обязательно"},
+		},
+		{
+			name:    "пункт без title",
+			content: `{"version": 1, "composition": [{"id": "c1", "match": {"by": "kind", "kind": "docx"}}]}`,
+			wantErr: []string{`пункт состава #1 (id "c1")`, "title обязательно"},
+		},
+		{
+			name:    "пункт без match",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка"}]}`,
+			wantErr: []string{`пункт состава #1 (id "c1")`, "match.by обязательно", "filename", "kind", "requisite"},
+		},
+		{
+			name:    "неизвестный способ сопоставления",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "magic"}}]}`,
+			wantErr: []string{`match.by = "magic"`, "допустимы"},
+		},
+		{
+			name:    "filename без pattern",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "filename"}}]}`,
+			wantErr: []string{"match.pattern обязателен"},
+		},
+		{
+			name:    "filename с битым glob",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "filename", "pattern": "заявка*[.docx"}}]}`,
+			wantErr: []string{"неверный glob"},
+		},
+		{
+			name:    "filename с лишним kind",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "filename", "pattern": "з*.docx", "kind": "docx"}}]}`,
+			wantErr: []string{"match.kind", "не используется при match.by"},
+		},
+		{
+			name:    "kind с неизвестным типом документа",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "kind", "kind": "txt"}}]}`,
+			wantErr: []string{`match.kind = "txt"`, "допустимы", "docx", "office_legacy"},
+		},
+		{
+			name:    "kind с лишним pattern",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "kind", "kind": "docx", "pattern": "з*.docx"}}]}`,
+			wantErr: []string{"match.pattern не используется"},
+		},
+		{
+			name:    "requisite с видом вне набора reqs",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "requisite", "kind": "date"}}]}`,
+			wantErr: []string{`match.kind = "date"`, "допустимы", "org_name"},
+		},
+		{
+			name: "дубликат id пунктов",
+			content: `{"version": 1, "composition": [
+				{"id": "c1", "title": "Заявка", "match": {"by": "kind", "kind": "docx"}},
+				{"id": "c1", "title": "Заявка копия", "match": {"by": "kind", "kind": "pdf"}}
+			]}`,
+			wantErr: []string{"пункты состава #1 и #2", `одинаковый id "c1"`},
+		},
+		{
+			name:    "неизвестное поле пункта",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "count": 2, "match": {"by": "kind", "kind": "docx"}}]}`,
+			wantErr: []string{"пункт состава #1", "структура пункта неверна", "count"},
+		},
+		{
+			name:    "неизвестное поле match",
+			content: `{"version": 1, "composition": [{"id": "c1", "title": "Заявка", "match": {"by": "kind", "kind": "docx", "regex": true}}]}`,
+			wantErr: []string{"пункт состава #1", "структура пункта неверна", "regex"},
+		},
+		{
+			name:    "пустой раздел composition — не ошибка",
+			content: `{"version": 1, "composition": []}`,
+			want:    Config{Version: SupportedVersion},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := LoadConfig(writeRulesConfig(t, tc.content))
+			if len(tc.wantErr) == 0 {
+				if err != nil {
+					t.Fatalf("LoadConfig: неожиданная ошибка: %v", err)
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("конфиг = %+v, хотели %+v", got, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("хотели ошибку, получили конфиг %+v", got)
+			}
+			if !errors.Is(err, ErrConfig) {
+				t.Errorf("ошибка пункта состава обязана нести ErrConfig: %v", err)
+			}
+			for _, want := range tc.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("в ошибке нет %q: %v", want, err)
 				}
 			}
 		})

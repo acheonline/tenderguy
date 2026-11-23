@@ -47,6 +47,16 @@ func TestRefWhere(t *testing.T) {
 			want: "",
 		},
 		{
+			name: "пункт требования без координат (P2.4)",
+			ref:  Ref{File: "rules.json", Item: "form-2"},
+			want: "п. form-2",
+		},
+		{
+			name: "пункт вместе с координатой — пункт первый",
+			ref:  Ref{File: "/п/ф.docx", Format: FormatDocx, Para: 3, Item: "ok"},
+			want: "п. ok · абз. 3",
+		},
+		{
 			name: "пустой адрес",
 			ref:  Ref{},
 			want: "",
@@ -81,6 +91,20 @@ func TestRefStringAndTraced(t *testing.T) {
 	}
 	if got := (Ref{File: "/п/ф.docx", Format: FormatDocx}).String(); got != "/п/ф.docx" {
 		t.Errorf("String() для адреса без координат = %q", got)
+	}
+
+	// Пункт требования (P2.4): файл правил + пункт — полноценный адрес,
+	// координаты внутри файла у него не предусмотрены.
+	item := Ref{File: "rules.json", Item: "form-2"}
+	if got, want := item.String(), "rules.json · п. form-2"; got != want {
+		t.Errorf("String() для адреса пункта = %q, хотим %q", got, want)
+	}
+	if !item.Traced() {
+		t.Error("адрес пункта требования признан нетрассированным")
+	}
+	// Пункт без файла по-прежнему указывает в никуда.
+	if (Ref{Item: "form-2"}).Traced() {
+		t.Error("адрес пункта без файла признан трассированным")
 	}
 }
 

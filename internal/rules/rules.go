@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"tenderguy/internal/reqs"
+	"tenderguy/internal/scanner"
 	"tenderguy/internal/trace"
 )
 
@@ -51,14 +52,66 @@ func configErr(format string, args ...any) error {
 }
 
 // Config — содержимое файла правил. P2.1 определил version и rules, P2.3
-// добавляет раздел orgs — эталонные реквизиты юрлиц для класса «reqs»;
-// разделы требуемого состава пакета и каталога сроков добавят задачи
-// P2.4—P2.5. Поэтому неизвестное поле верхнего уровня — ошибка: сегодня оно
+// добавляет раздел orgs — эталонные реквизиты юрлиц для класса «reqs», P2.4 —
+// раздел composition (требуемый состав пакета); каталог сроков добавит задача
+// P2.5. Поэтому неизвестное поле верхнего уровня — ошибка: сегодня оно
 // может означать только опечатку в имени существующего.
 type Config struct {
-	Version int    `json:"version"`
-	Orgs    []Org  `json:"orgs,omitempty"`
-	Rules   []Rule `json:"rules"`
+	Version     int               `json:"version"`
+	Orgs        []Org             `json:"orgs,omitempty"`
+	Composition []CompositionItem `json:"composition,omitempty"`
+	Rules       []Rule            `json:"rules"`
+}
+
+// Способы сопоставления файла с пунктом требуемого состава (P2.4).
+const (
+	matchByFilename  = "filename"
+	matchByKind      = "kind"
+	matchByRequisite = "requisite"
+)
+
+// CompositionItem — один пункт требуемого состава пакета. Требуемый состав
+// задаёт человек через конфигурацию: автоматическое извлечение требований из
+// документации закупки — задача P2.8, здесь её нет.
+type CompositionItem struct {
+	// ID обязателен и уникален: на него ссылается адрес замечания
+	// (trace.Ref.Item) и строка таблицы статусов.
+	ID string `json:"id"`
+	// Title — наименование требуемого документа; по нему пункт ищется в
+	// тексте описи пакета для адреса блокирующего замечания.
+	Title string `json:"title"`
+	// Required — признак обязательности: пропуск обязательного пункта
+	// блокирует пакет, необязательного — даёт только статус «нет».
+	Required bool `json:"required"`
+	// Match — способ сопоставления файлов пакета с пунктом.
+	Match CompositionMatch `json:"match"`
+}
+
+// CompositionMatch — способ сопоставления: по имени файла (pattern —
+// glob filepath.Match или точное имя), по типу документа из набора
+// scanner.Kind или по наличию в карточке документа реквизита из набора
+// reqs.Kind*. Лишние для выбранного способа поля — ошибка конфига, а не
+// молчаливое игнорирование: оператор обязан видеть опечатку.
+type CompositionMatch struct {
+	By      string `json:"by"`
+	Pattern string `json:"pattern,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+}
+
+// scannerKinds — допустимые типы документов для сопоставления by=kind:
+// набор обязан совпадать с классификацией обхода P1.1.
+var scannerKinds = []string{
+	string(scanner.KindDocx), string(scanner.KindXlsx), string(scanner.KindPdf),
+	string(scanner.KindOfficeLegacy), string(scanner.KindArchive),
+	string(scanner.KindService), string(scanner.KindOther),
+}
+
+// requisiteKinds — виды реквизитов карточки для сопоставления by=requisite.
+// Дата и сумма не входят: наличие «какой-то даты» не отличает один документ
+// от другого, а идентификаторы и наименование — отличают.
+var requisiteKinds = []string{
+	reqs.KindINN10, reqs.KindINN12, reqs.KindKPP,
+	reqs.KindOGRN, reqs.KindOGRNIP, reqs.KindOrgName, reqs.KindAddress,
 }
 
 // Org — эталонные реквизиты одного юрлица (сторона договора, заказчик,
@@ -134,9 +187,10 @@ func (f Finding) Validate() error {
 // его id: оператор правит файл руками и должен видеть строку, а не только имя
 // поля.
 type rawConfig struct {
-	Version int               `json:"version"`
-	Orgs    []json.RawMessage `json:"orgs"`
-	Rules   []json.RawMessage `json:"rules"`
+	Version     int               `json:"version"`
+	Orgs        []json.RawMessage `json:"orgs"`
+	Composition []json.RawMessage `json:"composition"`
+	Rules       []json.RawMessage `json:"rules"`
 }
 
 // LoadConfig читает файл правил и проверяет его содержимое. Ошибка чтения
@@ -183,6 +237,22 @@ func LoadConfig(path string) (Config, error) {
 		}
 		seenOrg[org.ID] = i
 		cfg.Orgs = append(cfg.Orgs, org)
+	}
+	// Требуемый состав разбирается до правил: класс «composition» обязан
+	// увидеть его готовым, а ошибка пункта — назвать номер и id, как ошибка
+	// эталона и правила.
+	seenComp := make(map[string]int, len(raw.Composition))
+	for i, item := range raw.Composition {
+		comp, err := parseCompositionItem(i, item)
+		if err != nil {
+			return Config{}, err
+		}
+		if first, dup := seenComp[comp.ID]; dup {
+			return Config{}, configErr("пункты состава #%d и #%d: одинаковый id %q — пункт обязан быть единственным в конфиге",
+				first+1, i+1, comp.ID)
+		}
+		seenComp[comp.ID] = i
+		cfg.Composition = append(cfg.Composition, comp)
 	}
 	// Пустой список правил или его отсутствие — не ошибка, а «проверять
 	// нечего»: движок обязан вернуть пустой отчёт, а не падать.
@@ -292,6 +362,112 @@ func parseOrg(index int, data json.RawMessage) (Org, error) {
 		return Org{}, configErr("%s: не задан ни один реквизит — сверять эталон не с чем", where)
 	}
 	return org, nil
+}
+
+// parseCompositionItem разбирает один пункт требуемого состава и проверяет
+// его способ сопоставления. Паттерн имени файла валидируется здесь, а не в
+// обработчике: битый glob — опечатка оператора (код выхода 2), а не сбой
+// проверки посреди прогона.
+func parseCompositionItem(index int, data json.RawMessage) (CompositionItem, error) {
+	var item CompositionItem
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&item); err != nil {
+		return CompositionItem{}, configErr("пункт состава #%d: структура пункта неверна: %v", index+1, err)
+	}
+
+	item.ID = strings.TrimSpace(item.ID)
+	if item.ID == "" {
+		return CompositionItem{}, configErr("пункт состава #%d: поле id обязательно и не может быть пустым", index+1)
+	}
+	item.Title = strings.TrimSpace(item.Title)
+	if item.Title == "" {
+		return CompositionItem{}, configErr("пункт состава #%d (id %q): поле title обязательно и не может быть пустым", index+1, item.ID)
+	}
+
+	where := fmt.Sprintf("пункт состава #%d (id %q)", index+1, item.ID)
+	switch item.Match.By {
+	case matchByFilename:
+		if item.Match.Kind != "" {
+			return CompositionItem{}, configErr("%s: match.kind = %q не используется при match.by = %q",
+				where, item.Match.Kind, matchByFilename)
+		}
+		if strings.TrimSpace(item.Match.Pattern) == "" {
+			return CompositionItem{}, configErr("%s: match.pattern обязателен при match.by = %q", where, matchByFilename)
+		}
+		// Glob проверяется только когда в паттерне есть «*»: без него паттерн
+		// сравнивается буквально (см. matchComposition), и скобки в имени
+		// «договор [1].docx» — символ имени файла, а не синтаксис glob.
+		if strings.Contains(item.Match.Pattern, "*") && badGlobPattern(item.Match.Pattern) {
+			return CompositionItem{}, configErr("%s: match.pattern = %q — неверный glob: незакрытая символьная группа «[»",
+				where, item.Match.Pattern)
+		}
+	case matchByKind:
+		if item.Match.Pattern != "" {
+			return CompositionItem{}, configErr("%s: match.pattern не используется при match.by = %q", where, matchByKind)
+		}
+		if !inList(item.Match.Kind, scannerKinds) {
+			return CompositionItem{}, configErr("%s: match.kind = %q — допустимы %s",
+				where, item.Match.Kind, strings.Join(scannerKinds, ", "))
+		}
+	case matchByRequisite:
+		if item.Match.Pattern != "" {
+			return CompositionItem{}, configErr("%s: match.pattern не используется при match.by = %q", where, matchByRequisite)
+		}
+		if !inList(item.Match.Kind, requisiteKinds) {
+			return CompositionItem{}, configErr("%s: match.kind = %q — допустимы %s",
+				where, item.Match.Kind, strings.Join(requisiteKinds, ", "))
+		}
+	case "":
+		return CompositionItem{}, configErr("%s: поле match.by обязательно — %s, %s или %s",
+			where, matchByFilename, matchByKind, matchByRequisite)
+	default:
+		return CompositionItem{}, configErr("%s: match.by = %q — допустимы %s, %s или %s",
+			where, item.Match.By, matchByFilename, matchByKind, matchByRequisite)
+	}
+	return item, nil
+}
+
+// inList — значение присутствует в наборе допустимых.
+func inList(value string, list []string) bool {
+	for _, v := range list {
+		if value == v {
+			return true
+		}
+	}
+	return false
+}
+
+// badGlobPattern — glob синтаксически неверен: символьная группа «[» не
+// закрыта. Проверять через filepath.Match(pattern, "") нельзя: Match сообщает
+// об ошибке только для той части паттерна, до которой дошёл при сопоставлении,
+// и незакрытая группа после «*» или после несовпавшего литерала ускользает.
+// Правило первого «]» совпадает с Match: сразу после «[» (или «[^») он входит
+// в группу как литерал, а не закрывает её.
+func badGlobPattern(pattern string) bool {
+	for i := 0; i < len(pattern); i++ {
+		if pattern[i] != '[' {
+			continue
+		}
+		i++
+		if i < len(pattern) && pattern[i] == '^' {
+			i++
+		}
+		if i < len(pattern) && pattern[i] == ']' {
+			i++
+		}
+		closed := false
+		for ; i < len(pattern); i++ {
+			if pattern[i] == ']' {
+				closed = true
+				break
+			}
+		}
+		if !closed {
+			return true
+		}
+	}
+	return false
 }
 
 // numericRequisite приводит числовой реквизит эталона к цифрам: пробелы и

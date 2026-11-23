@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"tenderguy/internal/reqs"
 	"tenderguy/internal/rules"
@@ -42,12 +43,15 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 		return exitBadPath
 	}
 
-	// Класс «реквизиты» (P2.3) регистрируется с эталонами из раздела orgs
-	// конфигурации: Handler получает только правило и пакет, поэтому эталоны
-	// замыкаются в обработчик здесь. Классы состава пакета и сроков добавят
-	// P2.4—P2.5.
+	// Классы регистрируются с данными из конфига: Handler получает только
+	// правило и пакет, поэтому эталоны orgs (P2.3) и требуемый состав (P2.4)
+	// замыкаются в обработчики здесь. Таблица статусов состава — побочный
+	// выход обработчика: приёмник заполняется при прогоне, а в отчёт попадает
+	// после Run. Класс сроков добавит P2.5.
 	runner := &rules.Runner{}
 	runner.Register(rules.ClassReqs, rules.NewReqsHandler(cfg.Orgs))
+	var compTable []rules.CompositionStatus
+	runner.Register(rules.ClassComposition, rules.NewCompositionHandler(cfg.Composition, p.rulesFile, &compTable))
 	rep, err := runner.Run(checkPackage(res), cfg)
 	if err != nil {
 		if errors.Is(err, rules.ErrConfig) {
@@ -59,6 +63,11 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 	}
 	if len(cfg.Rules) == 0 {
 		rep.Note = checkEmptyNote
+	}
+	// Таблица составов заполняется обработчиком при прогоне; Runner о ней не
+	// знает, поэтому в отчёт её кладём здесь.
+	if len(compTable) > 0 {
+		rep.Composition = compTable
 	}
 
 	if p.format == "json" {
@@ -161,6 +170,24 @@ func writeCheckText(w io.Writer, rep rules.Report) {
 	fmt.Fprintf(w, "Вердикт: %s\n", verdict)
 	if rep.Note != "" {
 		fmt.Fprintf(w, "Примечание: %s\n", rep.Note)
+	}
+
+	// Таблица требуемого состава (P2.4): статус «есть/нет» по каждому пункту
+	// до списка замечаний — сначала состав, потом отклонения от него.
+	if len(rep.Composition) > 0 {
+		fmt.Fprintln(w, "\nСостав пакета:")
+		for _, st := range rep.Composition {
+			required := "нет"
+			if st.Required {
+				required = "да"
+			}
+			status := "нет"
+			if st.Present {
+				status = "есть"
+			}
+			fmt.Fprintf(w, "  %-16s %-40s обязательный: %-4s статус: %-5s %s\n",
+				oneLine(st.Item), oneLine(st.Title), required, status, strings.Join(st.Files, ", "))
+		}
 	}
 
 	if len(rep.Findings) > 0 {
