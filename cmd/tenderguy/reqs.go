@@ -13,8 +13,9 @@ import (
 
 // extractReqs формирует карточку реквизитов (P1.5): разбирает документ своим
 // парсером формата (docx/xlsx/pdf — P1.2/P1.3/P1.4) на фрагменты с адресами
-// (P1.6), по ним ищет ИНН/КПП/ОГРН/даты/суммы, проверяет контрольные числа и
-// запоминает, где в источнике стоит каждое значение.
+// (P1.6), по ним ищет ИНН/КПП/ОГРН/даты/суммы, а с P2.2 — наименования и
+// юридические адреса по меткам полей формы, проверяет найденное и запоминает,
+// где в источнике стоит каждое значение.
 func extractReqs(p *params, stdout, stderr io.Writer) int {
 	targets, err := reqsTargets(p)
 	if err != nil {
@@ -139,6 +140,8 @@ var kindLabels = []struct{ kind, label string }{
 	{reqs.KindKPP, "КПП"},
 	{reqs.KindOGRN, "ОГРН"},
 	{reqs.KindOGRNIP, "ОГРНИП"},
+	{reqs.KindOrgName, "наименование"},
+	{reqs.KindAddress, "адрес"},
 	{reqs.KindDate, "дата"},
 	{reqs.KindMoney, "сумма"},
 }
