@@ -42,9 +42,12 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 		return exitBadPath
 	}
 
-	// Движок создаётся пустым: классы правил регистрируют задачи P2.3—P2.5,
-	// поэтому любой класс в конфиге пока даёт ошибку «неизвестен движку».
+	// Класс «реквизиты» (P2.3) регистрируется с эталонами из раздела orgs
+	// конфигурации: Handler получает только правило и пакет, поэтому эталоны
+	// замыкаются в обработчик здесь. Классы состава пакета и сроков добавят
+	// P2.4—P2.5.
 	runner := &rules.Runner{}
+	runner.Register(rules.ClassReqs, rules.NewReqsHandler(cfg.Orgs))
 	rep, err := runner.Run(checkPackage(res), cfg)
 	if err != nil {
 		if errors.Is(err, rules.ErrConfig) {

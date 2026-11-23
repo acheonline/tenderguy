@@ -190,3 +190,33 @@ func TestNormalizeCurrency(t *testing.T) {
 		}
 	}
 }
+
+// TestExportedValidators — экспортированные обёртки P2.3 (конфиг эталонов
+// проверяет реквизиты через них) выбирают валидатор по длине и возвращают
+// тот же результат, что и внутренние функции.
+func TestExportedValidators(t *testing.T) {
+	tests := []struct {
+		name      string
+		check     func(string) (bool, string)
+		value     string
+		wantValid bool
+	}{
+		{"ValidateINN: юрлицо валидно", ValidateINN, testINN10, true},
+		{"ValidateINN: ИП валидно", ValidateINN, testINN12, true},
+		{"ValidateINN: неверная длина", ValidateINN, "12345", false},
+		{"ValidateINN: контрольная цифра сбита", ValidateINN, "7714567894", false},
+		{"ValidateKPP: валидно", ValidateKPP, testKPP, true},
+		{"ValidateKPP: не 9 цифр", ValidateKPP, "77140100", false},
+		{"ValidateOGRN: ОГРН валидно", ValidateOGRN, testOGRN, true},
+		{"ValidateOGRN: ОГРНИП валидно", ValidateOGRN, testOGRNIP, true},
+		{"ValidateOGRN: неверная длина", ValidateOGRN, "10277000148", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			valid, _ := tt.check(tt.value)
+			if valid != tt.wantValid {
+				t.Errorf("check(%q) валидность = %v, хотим %v", tt.value, valid, tt.wantValid)
+			}
+		})
+	}
+}

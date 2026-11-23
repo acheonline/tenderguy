@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 
+	"tenderguy/internal/reqs"
 	"tenderguy/internal/trace"
 )
 
@@ -49,13 +50,37 @@ func configErr(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrConfig, fmt.Sprintf(format, args...))
 }
 
-// Config — содержимое файла правил. P2.1 определяет только version и rules:
-// разделы эталонных реквизитов, требуемого состава пакета и каталога сроков
-// добавят задачи P2.3—P2.5. Поэтому неизвестное поле верхнего уровня — ошибка:
-// сегодня оно может означать только опечатку в имени существующего.
+// Config — содержимое файла правил. P2.1 определил version и rules, P2.3
+// добавляет раздел orgs — эталонные реквизиты юрлиц для класса «reqs»;
+// разделы требуемого состава пакета и каталога сроков добавят задачи
+// P2.4—P2.5. Поэтому неизвестное поле верхнего уровня — ошибка: сегодня оно
+// может означать только опечатку в имени существующего.
 type Config struct {
 	Version int    `json:"version"`
+	Orgs    []Org  `json:"orgs,omitempty"`
 	Rules   []Rule `json:"rules"`
+}
+
+// Org — эталонные реквизиты одного юрлица (сторона договора, заказчик,
+// оператор). Эталон вводит человек через конфигурацию, а не «документ-эталон»
+// (решение P0-30); множественность оставлена пересмотром A3 — пакет может
+// содержать реквизиты нескольких законных сторон, поэтому Orgs является
+// списком. Пустой реквизит означает «не задан» и в сверке не участвует;
+// эталон без единого реквизита бессмысленен и отвергается конфигом.
+type Org struct {
+	// ID обязателен: на него ссылаются замечания и будущие классы правил.
+	ID string `json:"id"`
+	// Name — наименование юрлица; сравнивается нормализацией P2.2.
+	Name string `json:"name,omitempty"`
+	// Address — юридический адрес; сравнивается нормализацией P2.2.
+	Address string `json:"address,omitempty"`
+	// INN, KPP, OGRN — конфигурация допускает пробелы и разделители, но
+	// разбор приводит значение к цифровому виду и проверяет его валидаторами
+	// reqs: опечатка в эталоне не должна становиться ложным блокирующим
+	// замечанием по всему пакету.
+	INN  string `json:"inn,omitempty"`
+	KPP  string `json:"kpp,omitempty"`
+	OGRN string `json:"ogrn,omitempty"`
 }
 
 // Rule — одно правило конфига. Движок передаёт правило обработчику класса как
@@ -81,11 +106,21 @@ type Finding struct {
 	Refs     []trace.Ref `json:"refs"`
 }
 
-// Validate проверяет инвариант адресности: у замечания есть хотя бы один адрес
-// фрагмента-источника. Метод отдельный от Run, потому что тест класса правил
-// обязан прогнать его по каждому замечанию своей проверки — так же, как
-// TestEveryFragmentHasAddress в P1.6 проходит по всем фрагментам парсера.
+// Validate проверяет инварианты замечания: корректная severity и хотя бы один
+// адрес фрагмента-источника. Severity проверяется здесь, а не выводится из
+// правила, потому что класс вправе менять уровень по исходу проверки
+// (расхождение с эталоном блокирует, отсутствие поля — лишь предупреждение);
+// опечатка обработчика обязана стать ошибкой прогона, а не потерянным
+// замечанием (контракт, отложенный ревью P2.1). Метод отдельный от Run,
+// потому что тест класса правил обязан прогнать его по каждому замечанию
+// своей проверки — так же, как TestEveryFragmentHasAddress в P1.6 проходит по
+// всем фрагментам парсера.
 func (f Finding) Validate() error {
+	switch f.Severity {
+	case SeverityBlocking, SeverityWarning:
+	default:
+		return fmt.Errorf("замечание %q: severity %q — допустимы только blocking или warning", f.Text, string(f.Severity))
+	}
 	for _, ref := range f.Refs {
 		if ref.Traced() {
 			return nil
@@ -94,11 +129,13 @@ func (f Finding) Validate() error {
 	return fmt.Errorf("замечание %q: нет ни одного адреса в источнике — нужен trace.Ref с Traced()==true", f.Text)
 }
 
-// rawConfig — конфиг с «сырыми» правилами. Правила разбираются по одному,
-// чтобы сообщение об ошибке называло номер правила и его id: оператор правит
-// файл руками и должен видеть строку, а не только имя поля.
+// rawConfig — конфиг с «сырыми» правилами и эталонами. Правила и эталоны
+// разбираются по одному, чтобы сообщение об ошибке называло номер элемента и
+// его id: оператор правит файл руками и должен видеть строку, а не только имя
+// поля.
 type rawConfig struct {
 	Version int               `json:"version"`
+	Orgs    []json.RawMessage `json:"orgs"`
 	Rules   []json.RawMessage `json:"rules"`
 }
 
@@ -132,6 +169,21 @@ func LoadConfig(path string) (Config, error) {
 	}
 
 	cfg := Config{Version: raw.Version}
+	// Эталоны разбираются до правил: класс «reqs» обязан увидеть их готовыми,
+	// а ошибка эталона — назвать номер и id, как ошибка правила.
+	seenOrg := make(map[string]int, len(raw.Orgs))
+	for i, item := range raw.Orgs {
+		org, err := parseOrg(i, item)
+		if err != nil {
+			return Config{}, err
+		}
+		if first, dup := seenOrg[org.ID]; dup {
+			return Config{}, configErr("эталоны #%d и #%d: одинаковый id %q — эталон обязан быть единственным в конфиге",
+				first+1, i+1, org.ID)
+		}
+		seenOrg[org.ID] = i
+		cfg.Orgs = append(cfg.Orgs, org)
+	}
 	// Пустой список правил или его отсутствие — не ошибка, а «проверять
 	// нечего»: движок обязан вернуть пустой отчёт, а не падать.
 	seen := make(map[string]int, len(raw.Rules))
@@ -177,4 +229,99 @@ func parseRule(index int, data json.RawMessage) (Rule, error) {
 			where, rule.Severity, SeverityBlocking, SeverityWarning)
 	}
 	return rule, nil
+}
+
+// parseOrg разбирает один эталон и проверяет его реквизиты. Числовые
+// реквизиты приводятся к цифрам и проходят те же валидаторы reqs, что и
+// значения из документов: эталон с неверной контрольной цифрой превратил бы
+// каждое расхождение пакета в ложное блокирующее замечание, поэтому ошибка
+// конфигурации ловится на входе.
+func parseOrg(index int, data json.RawMessage) (Org, error) {
+	var org Org
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&org); err != nil {
+		return Org{}, configErr("эталон #%d: структура эталона неверна: %v", index+1, err)
+	}
+
+	org.ID = strings.TrimSpace(org.ID)
+	if org.ID == "" {
+		return Org{}, configErr("эталон #%d: поле id обязательно и не может быть пустым", index+1)
+	}
+	org.Name = strings.TrimSpace(org.Name)
+	org.Address = strings.TrimSpace(org.Address)
+
+	where := fmt.Sprintf("эталон #%d (id %q)", index+1, org.ID)
+	// Числовые реквизиты: конфигурация допускает пробелы и дефисы как
+	// разделители («7707 0838-93»), но буква внутри — опечатка, а не разделитель.
+	// Её нельзя молча вычистить: эталон с буквой обязан дать ошибку конфига,
+	// иначе он превратится в ложные блокирующие замечания по всему пакету.
+	for _, field := range []struct {
+		label string
+		raw   string
+		dst   *string
+	}{
+		{"inn", org.INN, &org.INN},
+		{"kpp", org.KPP, &org.KPP},
+		{"ogrn", org.OGRN, &org.OGRN},
+	} {
+		digits, ok := numericRequisite(field.raw)
+		if !ok {
+			return Org{}, configErr("%s: поле %s = %q — допускаются только цифры и разделители (пробел, дефис)",
+				where, field.label, field.raw)
+		}
+		*field.dst = digits
+	}
+	for _, field := range []struct {
+		label string
+		value string
+		check func(string) (bool, string)
+	}{
+		{"inn", org.INN, reqs.ValidateINN},
+		{"kpp", org.KPP, reqs.ValidateKPP},
+		{"ogrn", org.OGRN, reqs.ValidateOGRN},
+	} {
+		if field.value == "" {
+			continue
+		}
+		if ok, reason := field.check(field.value); !ok {
+			return Org{}, configErr("%s: поле %s = %q — %s", where, field.label, field.value, reason)
+		}
+	}
+	if org.Name == "" && org.Address == "" && org.INN == "" && org.KPP == "" && org.OGRN == "" {
+		return Org{}, configErr("%s: не задан ни один реквизит — сверять эталон не с чем", where)
+	}
+	return org, nil
+}
+
+// numericRequisite приводит числовой реквизит эталона к цифрам: пробелы и
+// дефисы считаются разделителями и убираются, любая другая нецифра (буква,
+// точка, знак) делает значение недопустимым. Второе возвращаемое значение —
+// признак успеха; при false вызывающий код отвергает эталон.
+func numericRequisite(raw string) (string, bool) {
+	var b strings.Builder
+	for _, r := range raw {
+		switch {
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == ' ' || r == '-' || r == '\u00A0' || r == '\t':
+			// разделители разрядов — пропускаем
+		default:
+			return "", false
+		}
+	}
+	return b.String(), true
+}
+
+// digitsOnly оставляет в строке только цифры: нормализация значений карточки
+// документа перед сравнением (значения уже извлечены регэкспом \b\d+\b, букв в
+// них не бывает, поэтому здесь — в отличие от numericRequisite — достаточно
+// просто отбросить нецифры).
+func digitsOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, s)
 }

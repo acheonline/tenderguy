@@ -141,6 +141,63 @@ func TestLoadConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "валидный эталон: пробелы в ИНН убираются, поля сохраняются",
+			content: `{"version": 1, "orgs": [
+				{"id": "supplier", "name": "ООО «Ромашка»", "inn": "7707 0838 93", "kpp": "773601001",
+				 "ogrn": "1027700132190", "address": "Москва, ул. Тверская, д. 1"}
+			]}`,
+			want: Config{
+				Version: SupportedVersion,
+				Orgs: []Org{{
+					ID: "supplier", Name: "ООО «Ромашка»",
+					INN: "7707083893", KPP: "773601001", OGRN: "1027700132190",
+					Address: "Москва, ул. Тверская, д. 1",
+				}},
+			},
+		},
+		{
+			name:    "эталон без id — ошибка называет номер эталона",
+			content: `{"version": 1, "orgs": [{"name": "ООО «Ромашка»"}]}`,
+			wantErr: []string{"эталон #1", "id обязательно"},
+			errKind: "config",
+		},
+		{
+			name:    "дубликат id эталонов — ошибка называет оба номера",
+			content: `{"version": 1, "orgs": [{"id": "s", "inn": "7707083893"}, {"id": "s", "inn": "7736207543"}]}`,
+			wantErr: []string{"эталоны #1 и #2", `одинаковый id "s"`},
+			errKind: "config",
+		},
+		{
+			name:    "эталон с неверной контрольной цифрой ИНН",
+			content: `{"version": 1, "orgs": [{"id": "s", "inn": "7707083894"}]}`,
+			wantErr: []string{`эталон #1 (id "s")`, "поле inn", "контрольная цифра не сходится"},
+			errKind: "config",
+		},
+		{
+			name:    "эталон с буквой в ИНН — не молчаливая правка, а ошибка",
+			content: `{"version": 1, "orgs": [{"id": "s", "inn": "77070838a93"}]}`,
+			wantErr: []string{`эталон #1 (id "s")`, "поле inn", "только цифры и разделители"},
+			errKind: "config",
+		},
+		{
+			name:    "эталон с неверным ОГРН",
+			content: `{"version": 1, "orgs": [{"id": "s", "ogrn": "1027700132191"}]}`,
+			wantErr: []string{`эталон #1 (id "s")`, "поле ogrn", "контрольная цифра не сходится"},
+			errKind: "config",
+		},
+		{
+			name:    "эталон без единого реквизита",
+			content: `{"version": 1, "orgs": [{"id": "s"}]}`,
+			wantErr: []string{`эталон #1 (id "s")`, "не задан ни один реквизит"},
+			errKind: "config",
+		},
+		{
+			name:    "неизвестное поле эталона",
+			content: `{"version": 1, "orgs": [{"id": "s", "inn": "7707083893", "bik": "044525225"}]}`,
+			wantErr: []string{"эталон #1", "структура эталона неверна", "bik"},
+			errKind: "config",
+		},
+		{
 			name:    "пустой список правил — не ошибка",
 			content: `{"version": 1, "rules": []}`,
 			want:    Config{Version: SupportedVersion},
@@ -233,6 +290,16 @@ func TestFindingValidate(t *testing.T) {
 		{
 			name:    "хотя бы один полный адрес — замечание валидно",
 			finding: Finding{Rule: "r1", Class: "test.class", Severity: SeverityBlocking, Text: "ок", Refs: []trace.Ref{fileOnly, traced}},
+		},
+		{
+			name:    "severity отсутствует — замечание невалидно",
+			finding: Finding{Rule: "r1", Class: "test.class", Text: "реквизит", Refs: []trace.Ref{traced}},
+			wantErr: []string{"severity", "blocking или warning"},
+		},
+		{
+			name:    "severity с опечаткой — замечание невалидно",
+			finding: Finding{Rule: "r1", Class: "test.class", Severity: Severity("fatal"), Text: "реквизит", Refs: []trace.Ref{traced}},
+			wantErr: []string{"severity", `"fatal"`, "blocking или warning"},
 		},
 	}
 

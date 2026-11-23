@@ -8,6 +8,36 @@ import (
 // Валидация реквизитов — то, чем P1.5 отличается от «найти цифры регэкспом»:
 // контрольные числа по методикам ФНС и календарная корректность дат.
 
+// ValidateINN проверяет ИНН юрлица (10 цифр) или физлица/ИП (12 цифр).
+// Экспортирован для P2.3: конфигурация эталонных реквизитов обязана проходить
+// ту же проверку, что и значения из документов, иначе опечатка в эталоне
+// превратится в ложные блокирующие замечания по всему пакету.
+func ValidateINN(s string) (bool, string) {
+	switch len(s) {
+	case 10:
+		return validateINN10(s)
+	case 12:
+		return validateINN12(s)
+	}
+	return false, "не 10 цифр (юрлицо) и не 12 цифр (ИП)"
+}
+
+// ValidateKPP проверяет КПП: 9 цифр, код региона не 00.
+func ValidateKPP(s string) (bool, string) {
+	return validateKPP(s)
+}
+
+// ValidateOGRN проверяет ОГРН (13 цифр) или ОГРНИП (15 цифр).
+func ValidateOGRN(s string) (bool, string) {
+	switch len(s) {
+	case 13:
+		return validateOGRN13(s)
+	case 15:
+		return validateOGRN15(s)
+	}
+	return false, "не 13 цифр (ОГРН) и не 15 цифр (ОГРНИП)"
+}
+
 // validateINN10 — контрольная цифра юрлица: взвешенная сумма первых 9 цифр
 // по коэффициентам 2,4,10,3,5,9,4,6,8, остаток от деления на 11, затем на 10.
 func validateINN10(s string) (bool, string) {
