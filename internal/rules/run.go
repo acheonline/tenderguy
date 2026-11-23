@@ -54,10 +54,22 @@ type Report struct {
 	Blocking   int    `json:"blocking"`
 	Warnings   int    `json:"warnings"`
 
-	// Findings и Failed в JSON присутствуют всегда и пусты как [], а не null:
-	// приёмка различает «значений нет» и «поле забыли» (свойство dump-docs).
+	// Findings, Failed и Skipped в JSON присутствуют всегда и пусты как [], а
+	// не null: приёмка различает «значений нет» и «поле забыли» (свойство
+	// dump-docs).
 	Findings []Finding `json:"findings"`
 	Failed   []Failed  `json:"failed"`
+
+	// Skipped — зарегистрированные классы, у которых в конфиге не оказалось
+	// ни одного правила: класс не проверялся, и отчёт называет причину, а не
+	// молчит (P2.6). Заполняет Run; класс со своими условиями пропуска
+	// (например «свежесть» при пустом каталоге, P2.5) допишет причину сам.
+	Skipped []Skipped `json:"skipped"`
+
+	// Summary — сводка-счётчики по классам (P2.6). Движок её не считает:
+	// форму отчёта знает вызывающий код, он и кладёт сводку
+	// (SummarizeClasses) в отчёт после Run — как таблицу Composition.
+	Summary []ClassSummary `json:"summary,omitempty"`
 
 	// Note — пояснение к отчёту, когда проверять нечего (в конфиге нет
 	// правил). В остальных случаях поле пусто и в JSON не попадает.
@@ -83,6 +95,7 @@ func (r *Runner) Run(pkg Package, cfg Config) (Report, error) {
 		RulesTotal: len(cfg.Rules),
 		Findings:   []Finding{},
 		Failed:     pkg.Failed,
+		Skipped:    r.skippedClasses(cfg),
 	}
 	if rep.Failed == nil {
 		rep.Failed = []Failed{}
@@ -112,6 +125,23 @@ func (r *Runner) Run(pkg Package, cfg Config) (Report, error) {
 		}
 	}
 	return rep, nil
+}
+
+// skippedClasses — зарегистрированные классы, у которых в конфиге нет ни
+// одного правила: они не проверялись, и отчёт обязан назвать причину (P2.6).
+// Порядок — алфавитный, как у Classes(), поэтому список детерминирован.
+func (r *Runner) skippedClasses(cfg Config) []Skipped {
+	used := make(map[Class]bool, len(cfg.Rules))
+	for _, rule := range cfg.Rules {
+		used[rule.Class] = true
+	}
+	out := []Skipped{}
+	for _, class := range r.Classes() {
+		if !used[class] {
+			out = append(out, Skipped{Class: class, Reason: "нет правил класса в конфиге"})
+		}
+	}
+	return out
 }
 
 // checkClasses — все ли классы конфига зарегистрированы в движке.

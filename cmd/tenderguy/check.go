@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -20,13 +21,16 @@ import (
 const checkEmptyNote = "проверять нечего"
 
 // checkCmd применяет детерминированные правила из файла --rules к пакету
-// --input-dir (P2.1). Коды выхода согласованы с остальными командами:
-// 0 — блокирующих замечаний нет (сюда же попадает пустой набор правил),
-// 1 — есть блокирующие замечания, не разобран поддерживаемый документ или
-// движок вернул внутреннюю ошибку, 2 — ошибка в флагах (проверяет checkFlags)
-// или в содержимом конфига, 3 — неверный путь (каталог или файл правил
-// недоступен). Предупреждения код не меняют: как подозрительные значения в
-// extract-reqs, они объявлены в stderr и видны в отчёте.
+// --input-dir (P2.1). Отчёт (P2.6) выводится в трёх форматах: text в консоль,
+// json в stdout, markdown — файлом report.md в каталог --output-dir (в консоль
+// при этом печатается краткий итог). Коды выхода согласованы с остальными
+// командами: 0 — блокирующих замечаний нет (сюда же попадает пустой набор
+// правил), 1 — есть блокирующие замечания, не разобран поддерживаемый
+// документ, движок вернул внутреннюю ошибку или отчёт не удалось записать,
+// 2 — ошибка в флагах (проверяет checkFlags) или в содержимом конфига,
+// 3 — неверный путь (каталог или файл правил недоступен). Предупреждения код
+// не меняют: как подозрительные значения в extract-reqs, они объявлены в
+// stderr и видны в отчёте.
 func checkCmd(p *params, stdout, stderr io.Writer) int {
 	cfg, err := rules.LoadConfig(p.rulesFile)
 	if err != nil {
@@ -70,12 +74,26 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 		rep.Composition = compTable
 	}
 
-	if p.format == "json" {
+	// Сводку по классам (P2.6) считает cmd, как и таблицу Composition:
+	// движок формы отчёта не знает.
+	rep.Summary = rules.SummarizeClasses(rep.Findings)
+
+	switch p.format {
+	case "json":
 		if err := writeCheckJSON(stdout, rep); err != nil {
 			fmt.Fprintf(stderr, "tenderguy: не удалось вывести отчёт: %v\n", err)
 			return exitProblems
 		}
-	} else {
+	case "markdown":
+		path, err := writeCheckMarkdown(p.outputDir, rep)
+		if err != nil {
+			fmt.Fprintf(stderr, "tenderguy: %v\n", err)
+			return exitProblems
+		}
+		// В консоль — только краткий итог: полный отчёт прочтут из файла.
+		fmt.Fprintf(stdout, "Вердикт: %s\n", checkVerdict(rep))
+		fmt.Fprintf(stdout, "Отчёт: %s\n", path)
+	default:
 		writeCheckText(stdout, rep)
 	}
 
@@ -146,6 +164,15 @@ func severityLabel(s rules.Severity) string {
 	}
 }
 
+// checkVerdict — вердикт отчёта для человека: есть ли блокирующие замечания.
+// Общий для text и markdown, чтобы оба формата формулировали итог одинаково.
+func checkVerdict(rep rules.Report) string {
+	if rep.Blocking > 0 {
+		return fmt.Sprintf("ЕСТЬ БЛОКИРУЮЩИЕ ЗАМЕЧАНИЯ: %d", rep.Blocking)
+	}
+	return "блокирующих замечаний нет"
+}
+
 func writeCheckJSON(w io.Writer, rep rules.Report) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -156,18 +183,25 @@ func writeCheckJSON(w io.Writer, rep rules.Report) error {
 	return nil
 }
 
-// writeCheckText печатает отчёт проверки. Группировки по классам и разметки
-// здесь сознательно нет — это P2.6, сейчас отчёт обязан быть читаемым списком.
+// writeCheckText печатает отчёт проверки (P2.6): замечания сгруппированы по
+// классам, внутри класса блокирующие идут первыми; непроверенные классы
+// показаны с причиной; сводка содержит счётчики и разбивку по классам.
+// Отчёт детерминирован: порядок строк задаёт rules.GroupFindings, дат и
+// времени в нём нет — повторный прогон по тому же входу даёт тот же текст.
 func writeCheckText(w io.Writer, rep rules.Report) {
 	fmt.Fprintf(w, "Каталог: %s\n", rep.InputDir)
 	fmt.Fprintf(w, "Правил в конфиге: %d\n", rep.RulesTotal)
-	fmt.Fprintf(w, "Замечаний: %d, блокирующих %d, предупреждений %d\n",
-		len(rep.Findings), rep.Blocking, rep.Warnings)
-	verdict := "блокирующих замечаний нет"
-	if rep.Blocking > 0 {
-		verdict = fmt.Sprintf("ЕСТЬ БЛОКИРУЮЩИЕ ЗАМЕЧАНИЯ: %d", rep.Blocking)
+	if len(rep.Findings) == 0 {
+		fmt.Fprintln(w, "Сводка: замечаний нет — пакет проходит проверку")
+	} else {
+		fmt.Fprintf(w, "Сводка: всего замечаний %d, блокирующих %d, предупреждений %d\n",
+			len(rep.Findings), rep.Blocking, rep.Warnings)
+		for _, s := range rep.Summary {
+			fmt.Fprintf(w, "  %s — всего %d, блокирующих %d, предупреждений %d\n",
+				s.Class, s.Total, s.Blocking, s.Warnings)
+		}
 	}
-	fmt.Fprintf(w, "Вердикт: %s\n", verdict)
+	fmt.Fprintf(w, "Вердикт: %s\n", checkVerdict(rep))
 	if rep.Note != "" {
 		fmt.Fprintf(w, "Примечание: %s\n", rep.Note)
 	}
@@ -190,9 +224,20 @@ func writeCheckText(w io.Writer, rep rules.Report) {
 		}
 	}
 
-	if len(rep.Findings) > 0 {
-		fmt.Fprintln(w, "\nЗамечания:")
-		for _, f := range rep.Findings {
+	// Класс без замечаний и без правил — не «всё в порядке», а «не проверяли»:
+	// причина обязана быть видна (критерий P2.6).
+	if len(rep.Skipped) > 0 {
+		fmt.Fprintln(w, "\nНепроверенные классы:")
+		for _, s := range rep.Skipped {
+			fmt.Fprintf(w, "  %s — %s\n", s.Class, s.Reason)
+		}
+	}
+
+	for _, g := range rules.GroupFindings(rep.Findings) {
+		fmt.Fprintf(w, "\nЗамечания [%s]:\n", g.Class)
+		for _, f := range g.Findings {
+			// Класс дублируется в строке замечания намеренно: строку отчёта
+			// цитируют и сверяют с таблицей P4 в отрыве от заголовка группы.
 			fmt.Fprintf(w, "  %-14s %-10s %s — %s\n", severityLabel(f.Severity), f.Class, f.Rule, oneLine(f.Text))
 			if f.Quote != "" {
 				fmt.Fprintf(w, "      цитата: %s\n", oneLine(f.Quote))
@@ -211,4 +256,92 @@ func writeCheckText(w io.Writer, rep rules.Report) {
 			fmt.Fprintf(w, "  ! %s — %s\n", filepath.Base(f.Path), f.Error)
 		}
 	}
+}
+
+// checkReportFileName — имя markdown-отчёта о проверке в каталоге --output-dir.
+const checkReportFileName = "report.md"
+
+// writeCheckMarkdown сохраняет отчёт о проверке файлом report.md в каталоге
+// outDir (каталог создаётся, если его нет) и возвращает путь к файлу.
+// Структура отчёта та же, что у writeCheckText: вердикт и сводка, состав
+// пакета, непроверенные классы с причиной, замечания по классам и
+// критичности, ошибки разбора. Дат и времени в файле нет — повторный прогон
+// по тому же входу даёт побайтово тот же отчёт.
+func writeCheckMarkdown(outDir string, rep rules.Report) (string, error) {
+	var b strings.Builder
+	b.WriteString("# Отчёт о проверке пакета\n\n")
+	fmt.Fprintf(&b, "- Каталог: `%s`\n", rep.InputDir)
+	fmt.Fprintf(&b, "- Правил в конфиге: %d\n", rep.RulesTotal)
+	fmt.Fprintf(&b, "- Вердикт: **%s**\n", checkVerdict(rep))
+	if rep.Note != "" {
+		fmt.Fprintf(&b, "- Примечание: %s\n", rep.Note)
+	}
+
+	b.WriteString("\n## Сводка\n\n")
+	if len(rep.Findings) == 0 {
+		b.WriteString("Замечаний нет — пакет проходит проверку.\n")
+	} else {
+		fmt.Fprintf(&b, "Всего замечаний: %d, блокирующих: %d, предупреждений: %d.\n\n",
+			len(rep.Findings), rep.Blocking, rep.Warnings)
+		b.WriteString("| Класс | Всего | Блокирующих | Предупреждений |\n")
+		b.WriteString("|---|---|---|---|\n")
+		for _, s := range rep.Summary {
+			fmt.Fprintf(&b, "| %s | %d | %d | %d |\n", s.Class, s.Total, s.Blocking, s.Warnings)
+		}
+	}
+
+	if len(rep.Composition) > 0 {
+		b.WriteString("\n## Состав пакета\n\n")
+		b.WriteString("| Пункт | Наименование | Обязательный | Статус | Файлы |\n")
+		b.WriteString("|---|---|---|---|---|\n")
+		for _, st := range rep.Composition {
+			required := "нет"
+			if st.Required {
+				required = "да"
+			}
+			status := "нет"
+			if st.Present {
+				status = "есть"
+			}
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n",
+				st.Item, oneLine(st.Title), required, status, strings.Join(st.Files, ", "))
+		}
+	}
+
+	if len(rep.Skipped) > 0 {
+		b.WriteString("\n## Непроверенные классы\n\n")
+		for _, s := range rep.Skipped {
+			fmt.Fprintf(&b, "- `%s` — %s\n", s.Class, s.Reason)
+		}
+	}
+
+	for _, g := range rules.GroupFindings(rep.Findings) {
+		fmt.Fprintf(&b, "\n## Замечания: класс `%s`\n\n", g.Class)
+		for _, f := range g.Findings {
+			fmt.Fprintf(&b, "- **%s** · класс `%s` · правило `%s` — %s\n",
+				severityLabel(f.Severity), f.Class, f.Rule, oneLine(f.Text))
+			if f.Quote != "" {
+				fmt.Fprintf(&b, "  - цитата: %s\n", oneLine(f.Quote))
+			}
+			for _, ref := range f.Refs {
+				fmt.Fprintf(&b, "  - адрес: `%s`\n", ref.String())
+			}
+		}
+	}
+
+	if len(rep.Failed) > 0 {
+		b.WriteString("\n## Ошибки разбора\n\n")
+		for _, f := range rep.Failed {
+			fmt.Fprintf(&b, "- `%s` — %s\n", filepath.Base(f.Path), f.Error)
+		}
+	}
+
+	path := filepath.Join(outDir, checkReportFileName)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", fmt.Errorf("не удалось создать каталог %s: %w", outDir, err)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return "", fmt.Errorf("не удалось записать %s: %w", path, err)
+	}
+	return path, nil
 }

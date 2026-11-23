@@ -455,7 +455,7 @@ func TestCollectMetricUnknownKind(t *testing.T) {
 }
 
 // Флаги metric: команда измеряет пакет целиком, поэтому --file и --with-text
-// отклоняются, --input-dir обязателен, а --output-dir остаётся у dump-docs.
+// отклоняются, --input-dir обязателен, а --output-dir остаётся у dump-docs и check.
 func TestRunMetricFlags(t *testing.T) {
 	inputDir := metricGoodDir(t)
 	outDir := t.TempDir()
@@ -489,7 +489,7 @@ func TestRunMetricFlags(t *testing.T) {
 		{
 			name:       "--output-dir отклоняется",
 			args:       []string{"--command", commandMetric, "--input-dir", inputDir, "--output-dir", outDir},
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "неизвестный --format",

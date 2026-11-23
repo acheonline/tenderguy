@@ -196,7 +196,7 @@ func TestUsageMentionsInputDirFlag(t *testing.T) {
 	var buf bytes.Buffer
 	fs, _ := newFlagSet(&buf)
 	usage(fs, &buf)
-	for _, want := range []string{"--input-dir", "Коды выхода", "text или json"} {
+	for _, want := range []string{"--input-dir", "Коды выхода", "text, json или markdown"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("в справке нет %q:\n%s", want, buf.String())
 		}
