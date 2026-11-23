@@ -340,6 +340,65 @@ func TestRunCheckReqsClass(t *testing.T) {
 	})
 }
 
+// TestRunCheckFreshnessEmptyCatalogNote — критерий 3 #60 на уровне CLI:
+// конфиг с правилом класса freshness, но без раздела freshness (каталог
+// сроков пуст) — пометка «не проверяется: каталог сроков отсутствует»
+// попадает в Report.Note и видна в текстовом отчёте и в JSON.
+func TestRunCheckFreshnessEmptyCatalogNote(t *testing.T) {
+	const wantNote = "не проверяется: каталог сроков отсутствует"
+
+	prepare := func(t *testing.T) (string, string) {
+		t.Helper()
+
+		dir := t.TempDir()
+		writeDocxFile(t, dir, "справка.docx", textParagraph("Дата: 01.01.2026"))
+		rules := writeCheckRules(t, `{"version": 1,
+			"rules": [{"id": "fresh-1", "class": "freshness", "severity": "blocking"}]}`)
+		return dir, rules
+	}
+
+	t.Run("text — примечание в отчёте, код 0", func(t *testing.T) {
+		dir, rules := prepare(t)
+		code, stdout, stderr := checkRun([]string{
+			"--command", "check", "--input-dir", dir, "--rules", rules,
+		})
+		if code != exitOK {
+			t.Errorf("код = %d, хотели %d\nstdout:\n%s\nstderr: %s", code, exitOK, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "Примечание: "+wantNote) {
+			t.Errorf("в stdout нет примечания %q:\n%s", wantNote, stdout)
+		}
+	})
+
+	t.Run("json — поле note, код 0", func(t *testing.T) {
+		dir, rules := prepare(t)
+		code, stdout, stderr := checkRun([]string{
+			"--command", "check", "--input-dir", dir, "--rules", rules,
+			"--format", "json",
+		})
+		if code != exitOK {
+			t.Errorf("код = %d, хотели %d\nstdout:\n%s\nstderr: %s", code, exitOK, stdout, stderr)
+		}
+		var rep struct {
+			Note     string `json:"note"`
+			Findings []struct {
+				Class string `json:"class"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+			t.Fatalf("JSON отчёта не читается: %v\n%s", err, stdout)
+		}
+		if rep.Note != wantNote {
+			t.Errorf("note = %q, хотели %q", rep.Note, wantNote)
+		}
+		for _, f := range rep.Findings {
+			if f.Class == "freshness" {
+				t.Errorf("пустой каталог дал замечание freshness: %+v", f)
+			}
+		}
+	})
+}
+
 // TestRunCheckOutputDirRejected — --output-dir не принадлежит check.
 func TestRunCheckOutputDirRejected(t *testing.T) {
 	inputDir := t.TempDir()

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"tenderguy/internal/reqs"
 	"tenderguy/internal/scanner"
@@ -53,13 +54,15 @@ func configErr(format string, args ...any) error {
 
 // Config — содержимое файла правил. P2.1 определил version и rules, P2.3
 // добавляет раздел orgs — эталонные реквизиты юрлиц для класса «reqs», P2.4 —
-// раздел composition (требуемый состав пакета); каталог сроков добавит задача
-// P2.5. Поэтому неизвестное поле верхнего уровня — ошибка: сегодня оно
-// может означать только опечатку в имени существующего.
+// раздел composition (требуемый состав пакета), P2.5 — раздел freshness
+// (каталог сроков свежести документов). Поэтому неизвестное поле верхнего
+// уровня — ошибка: сегодня оно может означать только опечатку в имени
+// существующего.
 type Config struct {
 	Version     int               `json:"version"`
 	Orgs        []Org             `json:"orgs,omitempty"`
 	Composition []CompositionItem `json:"composition,omitempty"`
+	Freshness   []FreshnessItem   `json:"freshness,omitempty"`
 	Rules       []Rule            `json:"rules"`
 }
 
@@ -112,6 +115,40 @@ var scannerKinds = []string{
 var requisiteKinds = []string{
 	reqs.KindINN10, reqs.KindINN12, reqs.KindKPP,
 	reqs.KindOGRN, reqs.KindOGRNIP, reqs.KindOrgName, reqs.KindAddress,
+}
+
+// Точки отсчёта срока свежести (P2.5): дата процедуры — фиксированная дата
+// из конфига (например, дата рассмотрения заявок), дата прогона — день,
+// когда проверка запущена. Точку отсчёта задаёт человек в каталоге: движок
+// не знает, от какой даты считается срок конкретного документа.
+const (
+	anchorProcedureDate = "procedure_date"
+	anchorRunDate       = "run_date"
+)
+
+// FreshnessItem — один пункт каталога сроков свежести (P2.5): «тип документа
+// × срок (дней) × точка отсчёта». Каталог по умолчанию пуст: реальные сроки
+// из практики закупочного законодательства — данные задачи #23, придумывать
+// их в коде нельзя. Пустой каталог не означает «всё свежее»: класс честно
+// сообщает, что не проверяется (критерий 3 #60).
+type FreshnessItem struct {
+	// ID обязателен и уникален в разделе: на него ссылается текст замечания.
+	ID string `json:"id"`
+	// Title — наименование типа документа («справка ФНС», «выписка ЕГРЮЛ»);
+	// входит в текст замечания, чтобы специалист видел, какое требование
+	// нарушено.
+	Title string `json:"title"`
+	// Days — срок свежести в днях, целое число больше нуля.
+	Days int `json:"days"`
+	// Anchor — точка отсчёта: anchorProcedureDate или anchorRunDate.
+	Anchor string `json:"anchor"`
+	// ProcedureDate — дата процедуры «YYYY-MM-DD»; обязательна при
+	// anchor = procedure_date и запрещена при anchor = run_date.
+	ProcedureDate string `json:"procedure_date,omitempty"`
+	// Match — способ сопоставления документов с пунктом. Класс сроков
+	// принимает только by = filename и by = kind: by = requisite («в карточке
+	// есть ИНН») не отличает один тип документа от другого по свежести.
+	Match CompositionMatch `json:"match"`
 }
 
 // Org — эталонные реквизиты одного юрлица (сторона договора, заказчик,
@@ -190,6 +227,7 @@ type rawConfig struct {
 	Version     int               `json:"version"`
 	Orgs        []json.RawMessage `json:"orgs"`
 	Composition []json.RawMessage `json:"composition"`
+	Freshness   []json.RawMessage `json:"freshness"`
 	Rules       []json.RawMessage `json:"rules"`
 }
 
@@ -253,6 +291,22 @@ func LoadConfig(path string) (Config, error) {
 		}
 		seenComp[comp.ID] = i
 		cfg.Composition = append(cfg.Composition, comp)
+	}
+	// Каталог сроков свежести разбирается до правил по тому же образцу:
+	// ошибка пункта называет номер и id. Пустой каталог законен — класс
+	// «freshness» сообщает об этом пометкой в отчёте (критерий 3 #60).
+	seenFresh := make(map[string]int, len(raw.Freshness))
+	for i, item := range raw.Freshness {
+		fresh, err := parseFreshnessItem(i, item)
+		if err != nil {
+			return Config{}, err
+		}
+		if first, dup := seenFresh[fresh.ID]; dup {
+			return Config{}, configErr("пункты каталога сроков #%d и #%d: одинаковый id %q — пункт обязан быть единственным в конфиге",
+				first+1, i+1, fresh.ID)
+		}
+		seenFresh[fresh.ID] = i
+		cfg.Freshness = append(cfg.Freshness, fresh)
 	}
 	// Пустой список правил или его отсутствие — не ошибка, а «проверять
 	// нечего»: движок обязан вернуть пустой отчёт, а не падать.
@@ -426,6 +480,94 @@ func parseCompositionItem(index int, data json.RawMessage) (CompositionItem, err
 			where, item.Match.By, matchByFilename, matchByKind, matchByRequisite)
 	}
 	return item, nil
+}
+
+// parseFreshnessItem разбирает один пункт каталога сроков свежести (P2.5) по
+// образцу parseCompositionItem: строгий декодер, обязательные поля, нумерованное
+// сообщение «пункт каталога #%d (id %q): …». Срок и точка отсчёта проверяются
+// здесь, а не в обработчике: опечатка оператора — код выхода 2, а не сбой
+// проверки посреди прогона или, хуже того, молча неверный расчёт свежести.
+func parseFreshnessItem(index int, data json.RawMessage) (FreshnessItem, error) {
+	var item FreshnessItem
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&item); err != nil {
+		return FreshnessItem{}, configErr("пункт каталога #%d: структура пункта неверна: %v", index+1, err)
+	}
+
+	item.ID = strings.TrimSpace(item.ID)
+	if item.ID == "" {
+		return FreshnessItem{}, configErr("пункт каталога #%d: поле id обязательно и не может быть пустым", index+1)
+	}
+	item.Title = strings.TrimSpace(item.Title)
+	if item.Title == "" {
+		return FreshnessItem{}, configErr("пункт каталога #%d (id %q): поле title обязательно и не может быть пустым", index+1, item.ID)
+	}
+
+	where := fmt.Sprintf("пункт каталога #%d (id %q)", index+1, item.ID)
+	if item.Days <= 0 {
+		return FreshnessItem{}, configErr("%s: поле days = %d — срок свежести обязан быть целым числом дней больше нуля", where, item.Days)
+	}
+	item.ProcedureDate = strings.TrimSpace(item.ProcedureDate)
+	switch item.Anchor {
+	case anchorProcedureDate:
+		if item.ProcedureDate == "" {
+			return FreshnessItem{}, configErr("%s: поле procedure_date обязательно при anchor = %q", where, anchorProcedureDate)
+		}
+		if _, err := time.Parse("2006-01-02", item.ProcedureDate); err != nil {
+			return FreshnessItem{}, configErr("%s: поле procedure_date = %q — нужна дата в формате ГГГГ-ММ-ДД", where, item.ProcedureDate)
+		}
+	case anchorRunDate:
+		if item.ProcedureDate != "" {
+			return FreshnessItem{}, configErr("%s: поле procedure_date = %q запрещено при anchor = %q — точка отсчёта считается от даты прогона",
+				where, item.ProcedureDate, anchorRunDate)
+		}
+	case "":
+		return FreshnessItem{}, configErr("%s: поле anchor обязательно — %q или %q", where, anchorProcedureDate, anchorRunDate)
+	default:
+		return FreshnessItem{}, configErr("%s: поле anchor = %q — допустимы %q или %q",
+			where, item.Anchor, anchorProcedureDate, anchorRunDate)
+	}
+	if err := checkFreshnessMatch(where, item.Match); err != nil {
+		return FreshnessItem{}, err
+	}
+	return item, nil
+}
+
+// checkFreshnessMatch проверяет способ сопоставления пункта каталога сроков.
+// Набор уже parseCompositionItem, но by = requisite отвергается: срок свежести
+// — свойство типа документа, а «в карточке есть ОГРН» не отличает справку от
+// выписки, поэтому такой пункт проверял бы не тот документ.
+func checkFreshnessMatch(where string, m CompositionMatch) error {
+	switch m.By {
+	case matchByFilename:
+		if m.Kind != "" {
+			return configErr("%s: match.kind = %q не используется при match.by = %q", where, m.Kind, matchByFilename)
+		}
+		if strings.TrimSpace(m.Pattern) == "" {
+			return configErr("%s: match.pattern обязателен при match.by = %q", where, matchByFilename)
+		}
+		// Glob проверяется только когда в паттерне есть «*»: без него паттерн
+		// сравнивается буквально (см. matchComposition).
+		if strings.Contains(m.Pattern, "*") && badGlobPattern(m.Pattern) {
+			return configErr("%s: match.pattern = %q — неверный glob: незакрытая символьная группа «[»", where, m.Pattern)
+		}
+	case matchByKind:
+		if m.Pattern != "" {
+			return configErr("%s: match.pattern не используется при match.by = %q", where, matchByKind)
+		}
+		if !inList(m.Kind, scannerKinds) {
+			return configErr("%s: match.kind = %q — допустимы %s", where, m.Kind, strings.Join(scannerKinds, ", "))
+		}
+	case matchByRequisite:
+		return configErr("%s: match.by = %q не поддерживается классом сроков свежести — допустимы %q или %q",
+			where, matchByRequisite, matchByFilename, matchByKind)
+	case "":
+		return configErr("%s: поле match.by обязательно — %q или %q", where, matchByFilename, matchByKind)
+	default:
+		return configErr("%s: match.by = %q — допустимы %q или %q", where, m.By, matchByFilename, matchByKind)
+	}
+	return nil
 }
 
 // inList — значение присутствует в наборе допустимых.
