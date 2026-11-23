@@ -211,6 +211,135 @@ func TestRunCheck(t *testing.T) {
 	}
 }
 
+// reqsRulesConfig — конфиг класса «реквизиты» (P2.3): эталон поставщика и
+// одно правило класса reqs.
+func reqsRulesConfig(t *testing.T) string {
+	t.Helper()
+
+	return writeCheckRules(t, `{"version": 1,
+		"orgs": [{"id": "supplier", "name": "ООО «Ромашка»", "inn": "7707083893"}],
+		"rules": [{"id": "reqs-1", "class": "reqs", "severity": "blocking"}]}`)
+}
+
+// reqsDocxDir собирает пакет из двух .docx: заявка с реквизитами эталона и
+// договор с чужими ИНН и наименованием.
+func reqsDocxDir(t *testing.T, secondBody string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	writeDocxFile(t, dir, "заявка.docx",
+		textParagraph("Полное наименование организации: ООО «Ромашка»")+
+			textParagraph("ИНН: 7707083893"))
+	writeDocxFile(t, dir, "договор.docx", textParagraph(secondBody))
+	return dir
+}
+
+// TestRunCheckReqsClass — сквозной прогон класса «реквизиты» через CLI:
+// совпадающий пакет даёт код 0, пакет с чужими реквизитами — код 1 и
+// замечания со значением из документа, значением эталона и адресом в источнике.
+func TestRunCheckReqsClass(t *testing.T) {
+	t.Run("совпадающий пакет — код 0", func(t *testing.T) {
+		dir := reqsDocxDir(t,
+			"Полное наименование организации: ООО «Ромашка» ИНН: 7707083893")
+		code, stdout, stderr := checkRun([]string{
+			"--command", "check", "--input-dir", dir,
+			"--rules", reqsRulesConfig(t),
+		})
+		if code != exitOK {
+			t.Errorf("код = %d, хотели %d\nstdout:\n%s\nstderr: %s", code, exitOK, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "Вердикт: блокирующих замечаний нет") {
+			t.Errorf("в stdout нет вердикта:\n%s", stdout)
+		}
+		if strings.Contains(stdout, "не совпадает с эталоном") {
+			t.Errorf("совпадающий пакет дал замечание сверки:\n%s", stdout)
+		}
+	})
+
+	t.Run("чужие реквизиты — код 1, замечание со значением, эталоном и адресом", func(t *testing.T) {
+		dir := reqsDocxDir(t,
+			"Полное наименование организации: ЗАО «Вектор» ИНН: 1234567894")
+		rules := reqsRulesConfig(t)
+		code, stdout, stderr := checkRun([]string{
+			"--command", "check", "--input-dir", dir,
+			"--rules", rules, "--format", "json",
+		})
+		if code != exitProblems {
+			t.Errorf("код = %d, хотели %d\nstdout:\n%s\nstderr: %s", code, exitProblems, stdout, stderr)
+		}
+
+		var rep struct {
+			Blocking int `json:"blocking"`
+			Findings []struct {
+				Rule     string `json:"rule"`
+				Class    string `json:"class"`
+				Severity string `json:"severity"`
+				Text     string `json:"text"`
+				Refs     []struct {
+					File string `json:"file"`
+					Para int    `json:"para"`
+				} `json:"refs"`
+			} `json:"findings"`
+		}
+		if err := json.Unmarshal([]byte(stdout), &rep); err != nil {
+			t.Fatalf("JSON отчёта не читается: %v\n%s", err, stdout)
+		}
+		if rep.Blocking == 0 {
+			t.Fatalf("blocking = 0, хотели >0:\n%s", stdout)
+		}
+
+		var innMismatch, nameMismatch, inconsistent bool
+		for _, f := range rep.Findings {
+			if f.Rule != "reqs-1" || f.Class != "reqs" {
+				t.Errorf("rule/class = %q/%q, хотели reqs-1/reqs", f.Rule, f.Class)
+			}
+			if f.Severity != "blocking" && f.Severity != "warning" {
+				t.Errorf("severity = %q — допустимы blocking или warning", f.Severity)
+			}
+			if len(f.Refs) == 0 || f.Refs[0].File == "" || f.Refs[0].Para == 0 {
+				t.Errorf("у замечания нет полного адреса в источнике: %+v", f.Refs)
+			}
+			switch {
+			case strings.Contains(f.Text, "различается между документами"):
+				inconsistent = true
+				for _, want := range []string{"заявка.docx", "договор.docx"} {
+					if !strings.Contains(f.Text, want) {
+						t.Errorf("в тексте консистентности нет %q: %s", want, f.Text)
+					}
+				}
+			case strings.Contains(f.Text, "не совпадает с эталоном"):
+				// Сверка с эталоном идёт по каждому виду реквизита отдельно:
+				// наименование и ИНН дают собственные замечания.
+				if strings.Contains(f.Text, "наименование") {
+					nameMismatch = true
+					for _, want := range []string{"ЗАО «Вектор»", "ООО «Ромашка»"} {
+						if !strings.Contains(f.Text, want) {
+							t.Errorf("в тексте сверки наименования нет %q: %s", want, f.Text)
+						}
+					}
+				}
+				if strings.Contains(f.Text, "ИНН") {
+					innMismatch = true
+					for _, want := range []string{"1234567894", "7707083893"} {
+						if !strings.Contains(f.Text, want) {
+							t.Errorf("в тексте сверки ИНН нет %q: %s", want, f.Text)
+						}
+					}
+				}
+			}
+		}
+		if !innMismatch {
+			t.Errorf("нет замечания сверки ИНН с эталоном:\n%s", stdout)
+		}
+		if !nameMismatch {
+			t.Errorf("нет замечания сверки наименования с эталоном:\n%s", stdout)
+		}
+		if !inconsistent {
+			t.Errorf("нет замечания внутренней консистентности:\n%s", stdout)
+		}
+	})
+}
+
 // TestRunCheckOutputDirRejected — --output-dir не принадлежит check.
 func TestRunCheckOutputDirRejected(t *testing.T) {
 	inputDir := t.TempDir()
