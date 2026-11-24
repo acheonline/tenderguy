@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"tenderguy/internal/reqs"
 	"tenderguy/internal/rules"
@@ -44,14 +45,17 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 	}
 
 	// Классы регистрируются с данными из конфига: Handler получает только
-	// правило и пакет, поэтому эталоны orgs (P2.3) и требуемый состав (P2.4)
-	// замыкаются в обработчики здесь. Таблица статусов состава — побочный
-	// выход обработчика: приёмник заполняется при прогоне, а в отчёт попадает
-	// после Run. Класс сроков добавит P2.5.
+	// правило и пакет, поэтому эталоны orgs (P2.3), требуемый состав (P2.4)
+	// и каталог сроков свежести (P2.5) замыкаются в обработчики здесь.
+	// Побочные выходы обработчиков — таблица статусов состава и пометка
+	// «каталог сроков отсутствует» — пишутся в приёмники при прогоне, а в
+	// отчёт попадают после Run.
 	runner := &rules.Runner{}
 	runner.Register(rules.ClassReqs, rules.NewReqsHandler(cfg.Orgs))
 	var compTable []rules.CompositionStatus
 	runner.Register(rules.ClassComposition, rules.NewCompositionHandler(cfg.Composition, p.rulesFile, &compTable))
+	var freshNote string
+	runner.Register(rules.ClassFreshness, rules.NewFreshnessHandler(cfg.Freshness, time.Now(), &freshNote))
 	rep, err := runner.Run(checkPackage(res), cfg)
 	if err != nil {
 		if errors.Is(err, rules.ErrConfig) {
@@ -63,6 +67,17 @@ func checkCmd(p *params, stdout, stderr io.Writer) int {
 	}
 	if len(cfg.Rules) == 0 {
 		rep.Note = checkEmptyNote
+	}
+	// Пометка класса «freshness» (пустой каталог сроков) — побочный выход
+	// обработчика; Runner о ней не знает, поэтому в отчёт её кладём здесь.
+	// Коллизия с «проверять нечего» практически невозможна (без правил
+	// обработчик не вызывается), но защищаемся: обе пометки важны.
+	if freshNote != "" {
+		if rep.Note != "" {
+			rep.Note += "; " + freshNote
+		} else {
+			rep.Note = freshNote
+		}
 	}
 	// Таблица составов заполняется обработчиком при прогоне; Runner о ней не
 	// знает, поэтому в отчёт её кладём здесь.
