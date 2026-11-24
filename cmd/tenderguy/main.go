@@ -19,6 +19,10 @@
 // фрагментов-источников. Задача P2.6: отчёт check выводится в трёх форматах —
 // text в консоль, json в stdout, markdown файлом report.md в каталог
 // --output-dir; замечания группируются по классам проверок и критичности.
+// Задача P2.8: командой --command extract-zd извлечь из закупочной
+// документации (ЗД ЭФ) требуемый состав пакета, пары «форма ↔ инструкция по
+// заполнению» и требования к участнику; --emit composition печатает состав в
+// схеме конфига правил — замена источника не меняет движок правил.
 // Пути в коде не фиксируются — каталог задаётся
 // только флагом --input-dir.
 package main
@@ -54,6 +58,7 @@ type params struct {
 	file      string
 	command   string
 	format    string
+	emit      string
 	withText  bool
 }
 
@@ -62,12 +67,13 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	p := &params{}
 	fs := flag.NewFlagSet("tenderguy", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1), dump-docs (сохранение всех данных в docs.json) или check (прогон правил по пакету)")
+	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1), dump-docs (сохранение всех данных в docs.json), check (прогон правил по пакету) или extract-zd (извлечение структур закупочной документации)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
 	fs.StringVar(&p.outputDir, "output-dir", "", "каталог вывода: обязателен для dump-docs (docs.json) и для check --format markdown (report.md)")
 	fs.StringVar(&p.rulesFile, "rules", "", "файл правил в формате JSON (обязателен только для check)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
 	fs.StringVar(&p.format, "format", "text", "формат отчёта: text, json или markdown (markdown — только для check, требует --output-dir)")
+	fs.StringVar(&p.emit, "emit", emitAll, "какие разделы печатает extract-zd: all (весь отчёт), composition (только требуемый состав в схеме конфига правил), forms или requirements")
 	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст целиком (parse-docx, parse-xlsx, parse-pdf) или список фрагментов с адресами (trace)")
 	return fs, p
 }
@@ -116,6 +122,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if p.command == commandCheck {
 		return checkCmd(p, stdout, stderr)
 	}
+	if p.command == commandExtractZD {
+		return extractZD(p, stdout, stderr)
+	}
 
 	res, err := scanner.Scan(p.inputDir)
 	if err != nil {
@@ -156,6 +165,15 @@ func checkFlags(p *params) error {
 	default:
 		return fmt.Errorf("неизвестный --format %q, допустимы text, json и markdown (markdown — только для %s)",
 			p.format, commandCheck)
+	}
+	// --emit принадлежит extract-zd (P2.8): значение проверяется всегда, а
+	// ненулевое (не all) у других команд означало бы молчаливо
+	// проигнорированный флаг.
+	if !isEmit(p.emit) {
+		return fmt.Errorf("неизвестный --emit %q, допустимы %s", p.emit, strings.Join(allEmits, ", "))
+	}
+	if p.emit != emitAll && p.command != commandExtractZD {
+		return fmt.Errorf("--emit используется только командой %s", commandExtractZD)
 	}
 	// --output-dir принадлежит dump-docs (docs.json) и check --format markdown
 	// (report.md): у остальных команд и сочетаний он означал бы молчаливо
@@ -202,6 +220,22 @@ func checkFlags(p *params) error {
 		}
 		if strings.TrimSpace(p.rulesFile) == "" {
 			return fmt.Errorf("не задан файл правил: %s требует --rules", commandCheck)
+		}
+		return nil
+	}
+	// extract-zd извлекает структуры из одного документа закупки (ЗД ЭФ):
+	// каталог здесь неприменим, --rules и --output-dir отвергаются выше
+	// общими проверками, текст документа в отчёт не попадает — вместо него
+	// извлечённые структуры с адресами.
+	if p.command == commandExtractZD {
+		if strings.TrimSpace(p.inputDir) != "" {
+			return fmt.Errorf("--input-dir не используется в %s: извлечение выполняется из одного документа закупки, переданного флагом --file", commandExtractZD)
+		}
+		if p.withText {
+			return fmt.Errorf("--with-text не используется в %s: отчёт содержит извлечённые структуры с адресами, а не текст документа", commandExtractZD)
+		}
+		if strings.TrimSpace(p.file) == "" {
+			return fmt.Errorf("не задан документ: %s требует --file", commandExtractZD)
 		}
 		return nil
 	}
@@ -254,6 +288,16 @@ func isCommand(command string) bool {
 	return false
 }
 
+// isEmit — из того ли списка allEmits значение --emit.
+func isEmit(emit string) bool {
+	for _, known := range allEmits {
+		if known == emit {
+			return true
+		}
+	}
+	return false
+}
+
 func usage(fs *flag.FlagSet, w io.Writer) {
 	fmt.Fprint(w, `Использование:
   tenderguy --input-dir <каталог> [--format text|json]
@@ -265,6 +309,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command metric --input-dir <каталог> [--format text|json]
   tenderguy --command dump-docs --input-dir <каталог> --output-dir <каталог>
   tenderguy --command check --input-dir <каталог> --rules <конфиг.json> [--format text|json|markdown] [--output-dir <каталог>]
+  tenderguy --command extract-zd --file <ЗД.docx> [--format text|json] [--emit all|composition|forms|requirements]
 
 Флаги:
 `)
@@ -286,6 +331,16 @@ H1 ≥ 80 % достигнут или измерять нечего; у check �
 --output-dir (каталог создаётся, если его нет) и печатает в консоль краткий
 итог. Замечания группируются по классам проверок, внутри класса блокирующие
 идут первыми; классы без правил в конфиге показаны с причиной непроверки.
+
+Отчёт extract-zd (P2.8): извлекает из закупочной документации требуемый
+состав пакета, пары «форма ↔ инструкция по заполнению» и требования к
+участнику вместе с адресами и вердиктом достоверности пагинации. Коды выхода:
+0 — все три структуры извлечены полностью (full), 1 — любая структура
+partial/not_found (причины в отчёте и в stderr) либо документ не .docx или не
+разобран. --emit composition печатает только массив пунктов требуемого состава
+в схеме раздела composition файла правил — вывод принимает --rules команды
+check без правок. Неразрешённые упоминания инструкций печатаются отдельным
+разделом отчёта и код выхода не меняют.
 `)
 }
 
