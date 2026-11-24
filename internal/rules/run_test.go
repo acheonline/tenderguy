@@ -40,7 +40,7 @@ func TestRunnerRun(t *testing.T) {
 			name: "правил нет — пустой отчёт, Findings и Failed не nil",
 			cfg:  Config{Version: SupportedVersion},
 			pkg:  Package{Root: "/пакет"},
-			want: Report{InputDir: "/пакет", Findings: []Finding{}, Failed: []Failed{}},
+			want: Report{InputDir: "/пакет", Findings: []Finding{}, Failed: []Failed{}, Skipped: []Skipped{}},
 		},
 		{
 			name: "замечания считаются, порядок правил конфига сохраняется",
@@ -75,7 +75,8 @@ func TestRunnerRun(t *testing.T) {
 					testFinding("b", SeverityWarning, "b-предупреждение", testTracedRef()),
 					testFinding("a", SeverityBlocking, "a-блокирующее", testTracedRef()),
 				},
-				Failed: []Failed{},
+				Failed:  []Failed{},
+				Skipped: []Skipped{},
 			},
 		},
 		{
@@ -93,6 +94,7 @@ func TestRunnerRun(t *testing.T) {
 				RulesTotal: 1,
 				Findings:   []Finding{},
 				Failed:     []Failed{{Path: "/пакет/скан.pdf", Error: "pdf не читается"}},
+				Skipped:    []Skipped{},
 			},
 		},
 		{

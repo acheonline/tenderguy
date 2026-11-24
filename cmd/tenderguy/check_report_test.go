@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,11 +41,16 @@ func TestRunCheckParsesPackage(t *testing.T) {
 			wantExit: exitOK,
 			wantOut: []string{
 				"Правил в конфиге: 0",
-				"Замечаний: 0, блокирующих 0, предупреждений 0",
+				"Сводка: замечаний нет — пакет проходит проверку",
 				"Вердикт: блокирующих замечаний нет",
 				"Примечание: проверять нечего",
+				// В конфиге нет правил, поэтому оба зарегистрированных класса
+				// показаны непроверенными с причиной (критерий P2.6).
+				"Непроверенные классы:",
+				"reqs — нет правил класса в конфиге",
+				"composition — нет правил класса в конфиге",
 			},
-			noOut: []string{"Ошибки разбора", "Замечания:"},
+			noOut: []string{"Ошибки разбора", "Замечания ["},
 		},
 		{
 			name:     "json: failed пуст, код 0",
@@ -188,7 +195,8 @@ func TestSeverityLabel(t *testing.T) {
 
 // TestWriteCheckTextFindings — печать отчёта с замечаниями напрямую: движок
 // P2.1 не имеет зарегистрированных классов, поэтому замечания через CLI
-// недостижимы, а ветки «Замечания:», цитаты и адреса обязаны быть проверены.
+// недостижимы, а ветки группировки по классам, цитаты, адреса и сводка
+// обязаны быть проверены.
 func TestWriteCheckTextFindings(t *testing.T) {
 	docxRef := trace.Ref{File: "/пакет/заявка.docx", Format: trace.FormatDocx, Page: 1, Para: 2}
 	xlsxRef := trace.Ref{File: "/пакет/лист.xlsx", Format: trace.FormatXlsx, Sheet: "Sheet1", Cell: "B7"}
@@ -198,6 +206,9 @@ func TestWriteCheckTextFindings(t *testing.T) {
 		rep     rules.Report
 		want    []string
 		notWant []string
+		// earlier/later — пара строк, порядок которых в отчёте обязан
+		// соблюдаться (группировка по классам: pkg.compose раньше reqs.compare).
+		earlier, later string
 	}{
 		{
 			name: "блокирующее и предупреждение, ошибки разбора",
@@ -206,6 +217,10 @@ func TestWriteCheckTextFindings(t *testing.T) {
 				RulesTotal: 2,
 				Blocking:   1,
 				Warnings:   1,
+				Summary: []rules.ClassSummary{
+					{Class: "pkg.compose", Total: 1, Warnings: 1},
+					{Class: "reqs.compare", Total: 1, Blocking: 1},
+				},
 				Findings: []rules.Finding{
 					{
 						Rule:     "r1",
@@ -228,9 +243,12 @@ func TestWriteCheckTextFindings(t *testing.T) {
 			want: []string{
 				"Каталог: /пакет",
 				"Правил в конфиге: 2",
-				"Замечаний: 2, блокирующих 1, предупреждений 1",
+				"Сводка: всего замечаний 2, блокирующих 1, предупреждений 1",
+				"pkg.compose — всего 1, блокирующих 0, предупреждений 1",
+				"reqs.compare — всего 1, блокирующих 1, предупреждений 0",
 				"Вердикт: ЕСТЬ БЛОКИРУЮЩИЕ ЗАМЕЧАНИЯ: 1",
-				"Замечания:",
+				"Замечания [reqs.compare]:",
+				"Замечания [pkg.compose]:",
 				"БЛОКИРУЮЩЕЕ",
 				"reqs.compare",
 				"r1 — ИНН не совпадает с карточкой",
@@ -243,15 +261,19 @@ func TestWriteCheckTextFindings(t *testing.T) {
 				"Ошибки разбора:",
 				"битый.docx — не открылся как .docx",
 			},
-			notWant: []string{"Примечание:"},
+			notWant: []string{"Примечание:", "Непроверенные классы:"},
+			earlier: "Замечания [pkg.compose]:",
+			later:   "Замечания [reqs.compare]:",
 		},
 		{
-			name: "только предупреждение — вердикт без блокирующих, примечание напечатано",
+			name: "только предупреждение — вердикт без блокирующих, примечание и непроверенный класс напечатаны",
 			rep: rules.Report{
 				InputDir:   "/пакет",
 				RulesTotal: 1,
 				Warnings:   1,
 				Note:       "проверять нечего",
+				Summary:    []rules.ClassSummary{{Class: "fresh.date", Total: 1, Warnings: 1}},
+				Skipped:    []rules.Skipped{{Class: "composition", Reason: "нет правил класса в конфиге"}},
 				Findings: []rules.Finding{
 					{
 						Rule:     "r1",
@@ -267,10 +289,13 @@ func TestWriteCheckTextFindings(t *testing.T) {
 			want: []string{
 				"Вердикт: блокирующих замечаний нет",
 				"Примечание: проверять нечего",
+				"Сводка: всего замечаний 1, блокирующих 0, предупреждений 1",
+				"Непроверенные классы:",
+				"composition — нет правил класса в конфиге",
 				"предупреждение",
 				"цитата: 01.10.2026",
 			},
-			notWant: []string{"ЕСТЬ БЛОКИРУЮЩИЕ", "Ошибки разбора:"},
+			notWant: []string{"ЕСТЬ БЛОКИРУЮЩИЕ", "Ошибки разбора:", "замечаний нет — пакет проходит проверку"},
 		},
 	}
 
@@ -289,6 +314,168 @@ func TestWriteCheckTextFindings(t *testing.T) {
 					t.Errorf("в отчёте не должно быть %q\n%s", notWant, out)
 				}
 			}
+			if tc.earlier != "" {
+				i, j := strings.Index(out, tc.earlier), strings.Index(out, tc.later)
+				if i < 0 || j < 0 || i > j {
+					t.Errorf("%q обязано идти раньше %q\n%s", tc.earlier, tc.later, out)
+				}
+			}
 		})
+	}
+}
+
+// TestRunCheckMarkdownReport — check --format markdown пишет report.md в
+// --output-dir (каталог создаётся, если его нет), в консоль печатает краткий
+// итог, а повторный прогон по тому же входу даёт побайтово тот же файл
+// (детерминизм отчёта, критерий P2.6).
+func TestRunCheckMarkdownReport(t *testing.T) {
+	tests := []struct {
+		name       string
+		prepare    func(t *testing.T) (inputDir, rulesPath string)
+		wantExit   int
+		wantStdout []string
+		wantFile   []string
+	}{
+		{
+			name: "конфиг без правил — итоговая строка и непроверенные классы",
+			prepare: func(t *testing.T) (string, string) {
+				return t.TempDir(), writeCheckRules(t, `{"version": 1}`)
+			},
+			wantExit: exitOK,
+			wantStdout: []string{
+				"Вердикт: блокирующих замечаний нет",
+			},
+			wantFile: []string{
+				"# Отчёт о проверке пакета",
+				"## Сводка",
+				"Замечаний нет — пакет проходит проверку.",
+				"## Непроверенные классы",
+				"`reqs` — нет правил класса в конфиге",
+				"`composition` — нет правил класса в конфиге",
+			},
+		},
+		{
+			name: "чужие реквизиты — замечания по классам, сводка-таблица и адреса",
+			prepare: func(t *testing.T) (string, string) {
+				return reqsDocxDir(t,
+						"Полное наименование организации: ЗАО «Вектор» ИНН: 1234567894"),
+					reqsRulesConfig(t)
+			},
+			wantExit: exitProblems,
+			wantStdout: []string{
+				"Вердикт: ЕСТЬ БЛОКИРУЮЩИЕ ЗАМЕЧАНИЯ",
+			},
+			wantFile: []string{
+				"Всего замечаний:",
+				"| Класс | Всего | Блокирующих | Предупреждений |",
+				"| reqs |",
+				"## Замечания: класс `reqs`",
+				"**БЛОКИРУЮЩЕЕ**",
+				"цитата:",
+				"адрес: `",
+				"## Непроверенные классы",
+				"`composition` — нет правил класса в конфиге",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, rulesPath := tc.prepare(t)
+			outDir := filepath.Join(t.TempDir(), "вложенный", "отчёт")
+			args := []string{
+				"--command", "check", "--input-dir", dir,
+				"--rules", rulesPath, "--format", "markdown", "--output-dir", outDir,
+			}
+
+			code, stdout, stderr := checkRun(args)
+			if code != tc.wantExit {
+				t.Fatalf("код = %d, хотели %d\nstdout:\n%s\nstderr:\n%s", code, tc.wantExit, stdout, stderr)
+			}
+			if !strings.Contains(stdout, "Отчёт: "+filepath.Join(outDir, checkReportFileName)) {
+				t.Errorf("в stdout нет пути к отчёту: %s", stdout)
+			}
+			for _, want := range tc.wantStdout {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("в stdout нет %q: %s", want, stdout)
+				}
+			}
+
+			path := filepath.Join(outDir, checkReportFileName)
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("report.md не записан: %v", err)
+			}
+			for _, want := range tc.wantFile {
+				if !strings.Contains(string(first), want) {
+					t.Errorf("в report.md нет %q:\n%s", want, first)
+				}
+			}
+
+			if code, _, stderr = checkRun(args); code != tc.wantExit {
+				t.Fatalf("код повторного прогона = %d, stderr: %s", code, stderr)
+			}
+			second, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("report.md не читается после повторного прогона: %v", err)
+			}
+			if !bytes.Equal(first, second) {
+				t.Errorf("повторный прогон не детерминирован:\n%s\n---\n%s", first, second)
+			}
+		})
+	}
+}
+
+// TestWriteCheckMarkdownSections — ветви markdown-отчёта, недостижимые через
+// CLI-прогоны выше одной фикстурой: примечание, таблица состава, непроверенный
+// класс, замечание с адресом и ошибки разбора.
+func TestWriteCheckMarkdownSections(t *testing.T) {
+	docxRef := trace.Ref{File: "/пакет/опись.docx", Format: trace.FormatDocx, Page: 1, Para: 2}
+	rep := rules.Report{
+		InputDir:    "/пакет",
+		RulesTotal:  1,
+		Blocking:    1,
+		Note:        "тестовое примечание",
+		Summary:     []rules.ClassSummary{{Class: "composition", Total: 1, Blocking: 1}},
+		Composition: []rules.CompositionStatus{{Item: "c1", Title: "Договор", Required: true, Present: true, Files: []string{"договор.docx"}}},
+		Skipped:     []rules.Skipped{{Class: "freshness", Reason: "в каталоге нет документов с датами"}},
+		Findings: []rules.Finding{{
+			Rule:     "r1",
+			Class:    "composition",
+			Severity: rules.SeverityBlocking,
+			Text:     "нет документа в составе",
+			Quote:    "Договор поставки",
+			Refs:     []trace.Ref{docxRef},
+		}},
+		Failed: []rules.Failed{{Path: "/пакет/битый.docx", Error: "не открылся как .docx"}},
+	}
+
+	path, err := writeCheckMarkdown(t.TempDir(), rep)
+	if err != nil {
+		t.Fatalf("writeCheckMarkdown: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("отчёт не читается: %v", err)
+	}
+	out := string(data)
+	for _, want := range []string{
+		"- Примечание: тестовое примечание",
+		"| Класс | Всего | Блокирующих | Предупреждений |",
+		"| composition | 1 | 1 | 0 |",
+		"## Состав пакета",
+		"| c1 | Договор | да | есть | договор.docx |",
+		"## Непроверенные классы",
+		"- `freshness` — в каталоге нет документов с датами",
+		"## Замечания: класс `composition`",
+		"- **БЛОКИРУЮЩЕЕ** · класс `composition` · правило `r1` — нет документа в составе",
+		"  - цитата: Договор поставки",
+		"  - адрес: `/пакет/опись.docx · стр. 1 · абз. 2`",
+		"## Ошибки разбора",
+		"- `битый.docx` — не открылся как .docx",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("в report.md нет %q:\n%s", want, out)
+		}
 	}
 }

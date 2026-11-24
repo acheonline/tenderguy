@@ -452,7 +452,7 @@ func TestRunDumpDocsMetadata(t *testing.T) {
 	}
 }
 
-// Регресс чужих контрактов: --output-dir принадлежит только dump-docs.
+// Регресс чужих контрактов: --output-dir принадлежит только dump-docs и check.
 func TestRunDumpDocsFlags(t *testing.T) {
 	inputDir := dumpGoodDir(t)
 	docsFile := filepath.Join(inputDir, "памятка.txt")
@@ -497,37 +497,37 @@ func TestRunDumpDocsFlags(t *testing.T) {
 			name:       "--output-dir вместе со scan",
 			args:       []string{"--input-dir", "{in}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "--output-dir вместе с trace",
 			args:       []string{"--command", "trace", "--input-dir", "{in}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "--output-dir вместе с extract-reqs",
 			args:       []string{"--command", "extract-reqs", "--input-dir", "{in}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "--output-dir вместе с parse-docx",
 			args:       []string{"--command", "parse-docx", "--file", "{file}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "--output-dir вместе с parse-xlsx",
 			args:       []string{"--command", "parse-xlsx", "--file", "{file}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:       "--output-dir вместе с parse-pdf",
 			args:       []string{"--command", "parse-pdf", "--file", "{file}", "--output-dir", "{out}"},
 			wantExit:   exitUsage,
-			wantErrOut: []string{"--output-dir используется только командой dump-docs"},
+			wantErrOut: []string{"--output-dir используется только командами dump-docs и check"},
 		},
 		{
 			name:     "--format=json для dump-docs принимается и не влияет",

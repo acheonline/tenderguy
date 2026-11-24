@@ -399,22 +399,76 @@ func TestRunCheckFreshnessEmptyCatalogNote(t *testing.T) {
 	})
 }
 
-// TestRunCheckOutputDirRejected — --output-dir не принадлежит check.
+// TestRunCheckOutputDirRejected — --output-dir в check допустим только вместе
+// с --format markdown (P2.6): text печатается в консоль, json — в stdout, а
+// markdown без каталога некуда записать. Обе ошибки — код 2.
 func TestRunCheckOutputDirRejected(t *testing.T) {
 	inputDir := t.TempDir()
 	rules := writeCheckRules(t, `{"version": 1}`)
 	outDir := filepath.Join(t.TempDir(), "out")
 
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{
+			name: "text с --output-dir — код 2",
+			args: []string{
+				"--command", "check",
+				"--input-dir", inputDir,
+				"--rules", rules,
+				"--output-dir", outDir,
+			},
+			wantStderr: "--output-dir используется в check только с --format markdown",
+		},
+		{
+			name: "json с --output-dir — код 2",
+			args: []string{
+				"--command", "check",
+				"--input-dir", inputDir,
+				"--rules", rules,
+				"--output-dir", outDir,
+				"--format", "json",
+			},
+			wantStderr: "--output-dir используется в check только с --format markdown",
+		},
+		{
+			name: "markdown без --output-dir — код 2",
+			args: []string{
+				"--command", "check",
+				"--input-dir", inputDir,
+				"--rules", rules,
+				"--format", "markdown",
+			},
+			wantStderr: "check --format markdown требует --output-dir",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			code, _, stderr := checkRun(tc.args)
+			if code != exitUsage {
+				t.Errorf("код = %d, хотели %d\nstderr: %s", code, exitUsage, stderr)
+			}
+			if !strings.Contains(stderr, tc.wantStderr) {
+				t.Errorf("stderr не называет причину %q: %s", tc.wantStderr, stderr)
+			}
+		})
+	}
+}
+
+// TestRunCheckMarkdownFormatRejectedForOtherCommand — --format markdown
+// принадлежит только check: у scan он означал бы молчаливо проигнорированный
+// флаг.
+func TestRunCheckMarkdownFormatRejectedForOtherCommand(t *testing.T) {
 	code, _, stderr := checkRun([]string{
-		"--command", "check",
-		"--input-dir", inputDir,
-		"--rules", rules,
-		"--output-dir", outDir,
+		"--input-dir", t.TempDir(), "--format", "markdown",
 	})
 	if code != exitUsage {
 		t.Errorf("код = %d, хотели %d\nstderr: %s", code, exitUsage, stderr)
 	}
-	if !strings.Contains(stderr, "--output-dir используется только командой dump-docs") {
+	if !strings.Contains(stderr, "--format markdown поддерживает только команда check") {
 		t.Errorf("stderr не называет причину: %s", stderr)
 	}
 }

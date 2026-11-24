@@ -16,7 +16,10 @@
 // в каталоге, переданном флагом --output-dir. Задача P2.1: командой
 // --command check применить к пакету детерминированные правила из
 // JSON-конфига, переданного флагом --rules, и показать замечания с адресами
-// фрагментов-источников. Пути в коде не фиксируются — каталог задаётся
+// фрагментов-источников. Задача P2.6: отчёт check выводится в трёх форматах —
+// text в консоль, json в stdout, markdown файлом report.md в каталог
+// --output-dir; замечания группируются по классам проверок и критичности.
+// Пути в коде не фиксируются — каталог задаётся
 // только флагом --input-dir.
 package main
 
@@ -61,10 +64,10 @@ func newFlagSet(out io.Writer) (*flag.FlagSet, *params) {
 	fs.SetOutput(out)
 	fs.StringVar(&p.command, "command", commandScan, "команда: scan (обход и классификация), parse-docx (текст и таблицы), parse-xlsx (ячейки и формулы), parse-pdf (текстовый слой и OCR), extract-reqs (карточка реквизитов), trace (адреса фрагментов и трассируемость), metric (доля разобранных документов, H1), dump-docs (сохранение всех данных в docs.json) или check (прогон правил по пакету)")
 	fs.StringVar(&p.inputDir, "input-dir", "", "каталог с документами для обхода (обязательный)")
-	fs.StringVar(&p.outputDir, "output-dir", "", "каталог для docs.json (обязателен только для dump-docs)")
+	fs.StringVar(&p.outputDir, "output-dir", "", "каталог вывода: обязателен для dump-docs (docs.json) и для check --format markdown (report.md)")
 	fs.StringVar(&p.rulesFile, "rules", "", "файл правил в формате JSON (обязателен только для check)")
 	fs.StringVar(&p.file, "file", "", "один документ (.docx, .xlsx или .pdf) для разбора (вместо каталога)")
-	fs.StringVar(&p.format, "format", "text", "формат отчёта: text или json")
+	fs.StringVar(&p.format, "format", "text", "формат отчёта: text, json или markdown (markdown — только для check, требует --output-dir)")
 	fs.BoolVar(&p.withText, "with-text", false, "вывести извлечённый текст целиком (parse-docx, parse-xlsx, parse-pdf) или список фрагментов с адресами (trace)")
 	return fs, p
 }
@@ -142,12 +145,22 @@ func checkFlags(p *params) error {
 	if !isCommand(p.command) {
 		return fmt.Errorf("неизвестный --command %q, допустимы %s", p.command, strings.Join(allCommands, ", "))
 	}
-	if p.format != "text" && p.format != "json" {
-		return fmt.Errorf("неизвестный --format %q, допустимы text и json", p.format)
+	switch p.format {
+	case "text", "json":
+	case "markdown":
+		// markdown-отчёт пишет на диск только check (P2.6): у остальных
+		// команд нет формы отчёта, ради которой стоило бы заводить файл.
+		if p.command != commandCheck {
+			return fmt.Errorf("--format markdown поддерживает только команда %s", commandCheck)
+		}
+	default:
+		return fmt.Errorf("неизвестный --format %q, допустимы text, json и markdown (markdown — только для %s)",
+			p.format, commandCheck)
 	}
-	// --output-dir принадлежит только dump-docs: у остальных команд он
-	// означал бы молчаливо проигнорированный флаг. На dump-docs --format не
-	// влияет — вывод всегда json-файл.
+	// --output-dir принадлежит dump-docs (docs.json) и check --format markdown
+	// (report.md): у остальных команд и сочетаний он означал бы молчаливо
+	// проигнорированный флаг. На dump-docs --format не влияет — вывод всегда
+	// json-файл.
 	if p.command == commandDumpDocs {
 		if strings.TrimSpace(p.outputDir) == "" {
 			return fmt.Errorf("не задан каталог вывода: %s требует --output-dir", commandDumpDocs)
@@ -158,8 +171,15 @@ func checkFlags(p *params) error {
 		if p.withText {
 			return fmt.Errorf("--with-text не используется в %s: содержимое всегда записывается в %s", commandDumpDocs, dumpFileName)
 		}
+	} else if p.command == commandCheck {
+		switch {
+		case p.format == "markdown" && strings.TrimSpace(p.outputDir) == "":
+			return fmt.Errorf("не задан каталог вывода: %s --format markdown требует --output-dir", commandCheck)
+		case p.format != "markdown" && strings.TrimSpace(p.outputDir) != "":
+			return fmt.Errorf("--output-dir используется в %s только с --format markdown: text печатается в консоль, json — в stdout", commandCheck)
+		}
 	} else if strings.TrimSpace(p.outputDir) != "" {
-		return fmt.Errorf("--output-dir используется только командой %s", commandDumpDocs)
+		return fmt.Errorf("--output-dir используется только командами %s и %s", commandDumpDocs, commandCheck)
 	}
 	// --rules принадлежит только check: у остальных команд файл правил
 	// означал бы молчаливо проигнорированный флаг.
@@ -244,7 +264,7 @@ func usage(fs *flag.FlagSet, w io.Writer) {
   tenderguy --command trace (--file <документ> | --input-dir <каталог>) [--with-text] [--format text|json]
   tenderguy --command metric --input-dir <каталог> [--format text|json]
   tenderguy --command dump-docs --input-dir <каталог> --output-dir <каталог>
-  tenderguy --command check --input-dir <каталог> --rules <конфиг.json> [--format text|json]
+  tenderguy --command check --input-dir <каталог> --rules <конфиг.json> [--format text|json|markdown] [--output-dir <каталог>]
 
 Флаги:
 `)
@@ -256,10 +276,16 @@ H1 ≥ 80 % достигнут или измерять нечего; у check �
 в том числе когда в конфиге нет правил), 1 — есть замечания (проблемные файлы,
 потери при извлечении, неразобранные документы или фрагменты и значения без
 адреса в источнике — команда trace; H1 ниже порога — команда metric;
-блокирующие замечания, неразобранные документы или внутренняя ошибка движка —
-команда check), 2 — ошибка в аргументах или в содержимом файла правил
-(команда check), 3 — неверный путь (каталога нет или это не каталог; у check
-сюда же попадает недоступный файл --rules).
+блокирующие замечания, неразобранные документы, внутренняя ошибка движка или
+неудавшаяся запись отчёта — команда check), 2 — ошибка в аргументах или в
+содержимом файла правил (команда check), 3 — неверный путь (каталога нет или
+это не каталог; у check сюда же попадает недоступный файл --rules).
+
+Отчёт check (P2.6): --format text печатает отчёт в консоль (по умолчанию),
+--format json — в stdout, --format markdown сохраняет файл report.md в каталог
+--output-dir (каталог создаётся, если его нет) и печатает в консоль краткий
+итог. Замечания группируются по классам проверок, внутри класса блокирующие
+идут первыми; классы без правил в конфиге показаны с причиной непроверки.
 `)
 }
 
