@@ -17,7 +17,9 @@ import (
 // фрагментов в источнике и проверка 100 % трассируемости (P1.6), metric —
 // замер H1, доли успешно разобранных документов пакета (P1.7), dump-docs —
 // сохранение всех извлечённых данных в docs.json (P1.8), check — прогон
-// детерминированных правил из JSON-конфига по пакету (P2.1).
+// детерминированных правил из JSON-конфига по пакету (P2.1), extract-zd —
+// извлечение структур закупочной документации: требуемый состав пакета,
+// пары «форма ↔ инструкция», требования к участнику (P2.8).
 const (
 	commandScan        = "scan"
 	commandParseDocx   = "parse-docx"
@@ -28,11 +30,12 @@ const (
 	commandMetric      = "metric"
 	commandDumpDocs    = "dump-docs"
 	commandCheck       = "check"
+	commandExtractZD   = "extract-zd"
 )
 
 // allCommands — что принимает --command: список идёт и в справку, и в
 // сообщение об ошибке, чтобы оно не разъезжалось с реальным набором команд.
-var allCommands = []string{commandScan, commandParseDocx, commandParseXlsx, commandParsePdf, commandExtractReqs, commandTrace, commandMetric, commandDumpDocs, commandCheck}
+var allCommands = []string{commandScan, commandParseDocx, commandParseXlsx, commandParsePdf, commandExtractReqs, commandTrace, commandMetric, commandDumpDocs, commandCheck, commandExtractZD}
 
 // parseCommands — команды разбора содержимого (кроме scan): у них вход задаёт
 // --file или --input-dir, а --with-text печатает извлечённый текст.
